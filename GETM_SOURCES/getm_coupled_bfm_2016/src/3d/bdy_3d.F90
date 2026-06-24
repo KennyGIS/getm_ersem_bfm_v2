@@ -25,9 +25,9 @@
    use getm_fabm, only: fabm_calc,model,fabm_pel,fabm_ben
 #endif
 #ifdef BFM_GOTM
-   use variables_bio_3d,only:cc3d
-   use bio, only:bio_calc
-   use bio_var,only:numc
+	   use variables_bio_3d,only:cc3d
+	   use bio, only:bio_calc
+	   use bio_var,only:numc
 #endif
    use exceptions
    IMPLICIT NONE
@@ -444,6 +444,7 @@
 #ifdef BFM_GOTM
 !   use bio_var, only: numc,cc,ws,var_names
 !   use mem,only:ppN1p,ppN3n,ppN4n,ppN5s,ppZ4c
+   use mem,only:ppO3h,ppO3c
 !   use global_interface,only:CalcBndyConcentration
    use domain, only: nsbv,nsbvl
 #endif
@@ -541,12 +542,24 @@
          do ib=1,numc
 !LEVEL1 'ib,cc3d_id(ib)',ib,cc3d_id(ib)
             select case (cc3d_id(ib))    
-               case( :-2 )      !zero gradient
-                  call bdy_3d_west(l,n,ZERO_GRADIENT,cc3d(:,:,:,ib))
-               case( -1 )         ! min-max control
-                  forall(j=wfj(n):wlj(n),az(i+1,j).gt.0) cc3d(i,j,:,ib)=max(cc3d_bdy_min(ib),&
-                                  min(cc3d_bdy_max(ib),cc3d(i+1,j,:,ib)))
-               case default     !clamped
+	               case( :-2 )      !zero gradient
+	                  call bdy_3d_west(l,n,ZERO_GRADIENT,cc3d(:,:,:,ib))
+		               case( -1 )         ! min-max control
+		                  ! ncdf_3d_bdy.F90 stores limit_* function="yes" in cc3d_bdy_func.
+		                  ! For carbonate boundary fallbacks only, calculate O3h/O3c first
+		                  ! and then apply valid_range. Other limit_* variables keep the
+		                  ! original adjacent-cell copy-and-clip behavior.
+	                  do j=wfj(n),wlj(n)
+	                     if (az(i+1,j).gt.0) then
+	                        if ((ib.eq.ppO3h .or. ib.eq.ppO3c) .and. cc3d_bdy_func(ib).ge.1) then
+	                           call apply_bfm_carbonate_function_boundary('west',i,j,i+1,j,ib)
+	                        else
+	                           cc3d(i,j,:,ib)=max(cc3d_bdy_min(ib),&
+	                                  min(cc3d_bdy_max(ib),cc3d(i+1,j,:,ib)))
+	                        end if
+	                     end if
+	                  end do
+	               case default     !clamped
 !JM                  call bdy_3d_west(l,n,CLAMPED,cc3d(:,:,:,ib),cc3d_bdy(bio_bounds,:,bdy_index(l)))
 !JM                  call bdy_3d_west(l,n,CLAMPED,cc3d(:,:,:,ib),cc3d_bdy(ib,:,bdy_index(l)))
                   bio_bst=bio_bst+1
@@ -575,10 +588,10 @@
 !LEVEL1 'cc3d',cc3d(3,:,24,ib)
 !LEVEL1 'cc3d',cc3d(4,:,24,3)
 !if (ib.eq.3) stop
-            end select
-         end do
-!stop
-      end if
+	            end select
+	         end do
+	!stop
+	      end if
 #endif
    end do
 
@@ -601,9 +614,9 @@
                   bdy_data = bio_bdy(:,:,o)
 #endif
                   call bdy_3d_north(l,n,CLAMPED,fabm_pel(:,:,:,o),p_bdy_data)
-            end select
-         end do
-      end if
+	            end select
+	         end do
+	      end if
 #endif
 #ifdef BFM_GOTM
 !      ln = ln+1
@@ -612,12 +625,24 @@
          bio_bst=0
          do ib=1,numc
             select case (cc3d_id(ib))    
-               case( :-2 )    !zero gradient
-                  call bdy_3d_north(l,n,ZERO_GRADIENT,cc3d(:,:,:,ib))
-               case( -1 )         ! min-max control
-                  forall(i=nfi(n):nli(n),az(i,j-1).gt.0) cc3d(i,j,:,ib)=max(cc3d_bdy_min(ib),&
-                           min(cc3d_bdy_max(ib),cc3d(i,j-1,:,ib)))
-               case default     !clamped
+	               case( :-2 )    !zero gradient
+	                  call bdy_3d_north(l,n,ZERO_GRADIENT,cc3d(:,:,:,ib))
+		               case( -1 )         ! min-max control
+		                  ! ncdf_3d_bdy.F90 stores limit_* function="yes" in cc3d_bdy_func.
+		                  ! For carbonate boundary fallbacks only, calculate O3h/O3c first
+		                  ! and then apply valid_range. Other limit_* variables keep the
+		                  ! original adjacent-cell copy-and-clip behavior.
+	                  do i=nfi(n),nli(n)
+	                     if (az(i,j-1).gt.0) then
+	                        if ((ib.eq.ppO3h .or. ib.eq.ppO3c) .and. cc3d_bdy_func(ib).ge.1) then
+	                           call apply_bfm_carbonate_function_boundary('north',i,j,i,j-1,ib)
+	                        else
+	                           cc3d(i,j,:,ib)=max(cc3d_bdy_min(ib),&
+	                                  min(cc3d_bdy_max(ib),cc3d(i,j-1,:,ib)))
+	                        end if
+	                     end if
+	                  end do
+	               case default     !clamped
 !JM                  call bdy_3d_north(l,n,CLAMPED,cc3d(:,:,:,ib),cc3d_bdy(bio_bounds,:,bdy_index(l)))
 !JM                  call bdy_3d_north(l,n,CLAMPED,cc3d(:,:,:,ib),cc3d_bdy(ib,:,bdy_index(l)))
                   bio_bst=bio_bst+1
@@ -638,9 +663,9 @@
 !LEVEL1 'cc3d',cc3d(:,jmax-1,24,ib)
 !LEVEL1 'cc3d',cc3d(:,jmax-2,24,ib)
 !LEVEL1 'cc3d',cc3d(:,jmax-3,24,ib)
-            end select
-         end do
-      end if
+	            end select
+	         end do
+	      end if
 #endif
    end do
 !stop
@@ -664,9 +689,9 @@
                   bdy_data = bio_bdy(:,:,o)
 #endif
                   call bdy_3d_east(l,n,CLAMPED,fabm_pel(:,:,:,o),p_bdy_data)
-            end select
-         end do
-      end if
+	            end select
+	         end do
+	      end if
 #endif
 #ifdef BFM_GOTM
 !      le = le +1
@@ -675,12 +700,24 @@
          bio_bst=0
          do ib=1,numc
             select case (cc3d_id(ib))    
-               case( :-2 )    !zero gradient
-                  call bdy_3d_east(l,n,ZERO_GRADIENT,cc3d(:,:,:,ib))
-               case( -1 )    !zero gradient
-                  forall(j=efj(n):elj(n),az(i-1,j).gt.0) cc3d(i,j,:,ib)=max(cc3d_bdy_min(ib),&
-                                  min(cc3d_bdy_max(ib),cc3d(i-1,j,:,ib)))
-               case default     !clamped
+	               case( :-2 )    !zero gradient
+	                  call bdy_3d_east(l,n,ZERO_GRADIENT,cc3d(:,:,:,ib))
+		               case( -1 )    ! min-max control
+		                  ! ncdf_3d_bdy.F90 stores limit_* function="yes" in cc3d_bdy_func.
+		                  ! For carbonate boundary fallbacks only, calculate O3h/O3c first
+		                  ! and then apply valid_range. Other limit_* variables keep the
+		                  ! original adjacent-cell copy-and-clip behavior.
+	                  do j=efj(n),elj(n)
+	                     if (az(i-1,j).gt.0) then
+	                        if ((ib.eq.ppO3h .or. ib.eq.ppO3c) .and. cc3d_bdy_func(ib).ge.1) then
+	                           call apply_bfm_carbonate_function_boundary('east',i,j,i-1,j,ib)
+	                        else
+	                           cc3d(i,j,:,ib)=max(cc3d_bdy_min(ib),&
+	                                  min(cc3d_bdy_max(ib),cc3d(i-1,j,:,ib)))
+	                        end if
+	                     end if
+	                  end do
+	               case default     !clamped
 !JM                  call bdy_3d_east(l,n,CLAMPED,cc3d(:,:,:,ib),cc3d_bdy(bio_bounds,:,bdy_index(l)))
 !JM                  call bdy_3d_east(l,n,CLAMPED,cc3d(:,:,:,ib),cc3d_bdy(ib,:,bdy_index(l)))
                   bio_bst=bio_bst+1
@@ -695,14 +732,14 @@
 !LEVEL1 'cc3d',cc3d(imax-1,:,24,ib)
 !LEVEL1 'cc3d',cc3d(imax-2,:,24,ib)
 !LEVEL1 'cc3d',cc3d(imax-3,:,24,ib)
-                  call bdy_3d_east(l,n,CLAMPED,cc3d(:,:,:,ib),bdy_data)
+	                  call bdy_3d_east(l,n,CLAMPED,cc3d(:,:,:,ib),bdy_data)
 !LEVEL1 'cc3d',cc3d(imax,:,24,ib)
 !LEVEL1 'cc3d',cc3d(imax-1,:,24,ib)
 !LEVEL1 'cc3d',cc3d(imax-2,:,24,ib)
 !LEVEL1 'cc3d',cc3d(imax-3,:,24,ib)
-            end select
-         end do
-      end if
+	            end select
+	         end do
+	      end if
 #endif
    end do
 
@@ -736,23 +773,35 @@
          bio_bst=0
          do ib=1,numc
             select case (cc3d_id(ib))    
-               case( :-2 )    !zero gradient
-                  call bdy_3d_south(l,n,ZERO_GRADIENT,cc3d(:,:,:,ib))
-               case( -1 )    !zero gradient
-                  forall(i=sfi(n):sli(n),az(i,j+1).gt.0) cc3d(i,j,:,ib)=max(cc3d_bdy_min(ib),&
-                        min(cc3d_bdy_max(ib),cc3d(i,j+1,:,ib)))
+	               case( :-2 )    !zero gradient
+	                  call bdy_3d_south(l,n,ZERO_GRADIENT,cc3d(:,:,:,ib))
+		               case( -1 )    ! min-max control
+		                  ! ncdf_3d_bdy.F90 stores limit_* function="yes" in cc3d_bdy_func.
+		                  ! For carbonate boundary fallbacks only, calculate O3h/O3c first
+		                  ! and then apply valid_range. Other limit_* variables keep the
+		                  ! original adjacent-cell copy-and-clip behavior.
+	                  do i=sfi(n),sli(n)
+	                     if (az(i,j+1).gt.0) then
+	                        if ((ib.eq.ppO3h .or. ib.eq.ppO3c) .and. cc3d_bdy_func(ib).ge.1) then
+	                           call apply_bfm_carbonate_function_boundary('south',i,j,i,j+1,ib)
+	                        else
+	                           cc3d(i,j,:,ib)=max(cc3d_bdy_min(ib),&
+	                                  min(cc3d_bdy_max(ib),cc3d(i,j+1,:,ib)))
+	                        end if
+	                     end if
+	                  end do
 
-               case default      !clamped
+	               case default      !clamped
 !JM                  call bdy_3d_south(l,n,CLAMPED,cc3d(:,:,:,ib),cc3d_bdy(bio_bounds,:,bdy_index(l)))
 !JM                  call bdy_3d_south(l,n,CLAMPED,cc3d(:,:,:,ib),cc3d_bdy(ib,:,bdy_index(l)))
                   bio_bst=bio_bst+1
                   i_bdy1=bdy_index(1)
                   i_bdy2=i_bdy1+nsbvl
                   bdy_data=cc3d_bdy(bio_bst,:,i_bdy1:i_bdy2)
-                  call bdy_3d_south(l,n,CLAMPED,cc3d(:,:,:,ib),bdy_data)
-            end select
-         end do
-      end if
+	                  call bdy_3d_south(l,n,CLAMPED,cc3d(:,:,:,ib),bdy_data)
+	            end select
+	         end do
+	      end if
 #endif
    end do
 
@@ -772,9 +821,71 @@
    write(debug,*) 'leaving do_bdy_3d()'
    write(debug,*)
 #endif
+	   return
+	   end subroutine do_bdy_3d
+	!EOC
+
+#ifdef BFM_GOTM
+!-----------------------------------------------------------------------
+!BOP
+!
+! !IROUTINE:  apply_bfm_carbonate_function_boundary
+!
+! !INTERFACE:
+   subroutine apply_bfm_carbonate_function_boundary(side,i,j,source_i,source_j,ib)
+!
+! !DESCRIPTION:
+!
+	! The normal limit_* boundary path copies the adjacent model value and
+	! clips it to valid_range. For O3h/O3c with function=yes, this routine
+	! calls the BFM carbonate boundary equation first and then applies the
+	! same valid_range safety check. The adjacent source column is passed as
+	! the old state so CalcBndyConcentration keeps its existing blending and
+	! DIC safety behavior.
+!
+! !USES:
+   use global_interface,only:CalcBndyConcentration
+   use mem,only:ppO3h,ppO3c
+   IMPLICIT NONE
+!
+! !INPUT VARIABLES:
+   character(len=*),intent(in)                         :: side
+   integer,intent(in)                                  :: i,j,source_i,source_j,ib
+!
+! !LOCAL VARIABLES:
+   REALTYPE,dimension(0:kmax)                          :: S1D,T1D,R1D
+   REALTYPE,dimension(0:kmax,1:numc)                   :: cc_old,cc
+   integer                                             :: ierror
+!EOP
+!-----------------------------------------------------------------------
+!BOC
+
+   if (.not. ((ib.eq.ppO3h .or. ib.eq.ppO3c) .and. cc3d_bdy_func(ib).ge.1)) return
+
+   S1D = S(i,j,:)
+   T1D = T(i,j,:)
+   R1D = rho(i,j,:)
+   cc_old = cc3d(source_i,source_j,:,:)
+   cc = cc_old
+
+   call CalcBndyConcentration(area,side,numc,kmax,ib, &
+                              cc3d_bdy_func(ib),cc3d_bdy_multi(ib), &
+                              R1D,S1D,T1D,cc_old,cc,ierror)
+   if (cc3d_bdy_max(ib) .gt. cc3d_bdy_min(ib)) then
+      cc(:,ib) = max(cc3d_bdy_min(ib),min(cc3d_bdy_max(ib),cc(:,ib)))
+   end if
+   if (ierror .eq. 1) then
+      LEVEL3 'BFM carbonate boundary function adjusted ',side, &
+             ' i=',i,' j=',j,' var=',ib
+   end if
+
+   cc3d(i,j,:,ib) = cc(:,ib)
+
    return
-   end subroutine do_bdy_3d
+   end subroutine apply_bfm_carbonate_function_boundary
 !EOC
+#endif
+
 !-----------------------------------------------------------------------
 !BOP
 !
