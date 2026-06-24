@@ -71,6 +71,7 @@
   real(RLEN) :: p_qhK4K3n= 1.0! proportion between H+ and N transfer removal/NH4-->NO3 in nitrification
   real(RLEN) :: p_qhATo=0.5 ! proportion between H+ production and O2 consumption in anaerobic mineralization 
   real(RLEN) :: p_qhK3G4n=0.5 ! proportion between H+ production and denitrification in anaerobic mineralization 
+  real(RLEN) :: p_river_O3h_fallback=1400.0_RLEN ! fallback river alkalinity for limit_O3h:function
   !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
   ! SHARED PUBLIC FUNCTIONS (must be explicited below "contains")
 
@@ -81,7 +82,7 @@
   subroutine InitCO2()
 
   !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-  namelist /CO2_parameters/ MethodCalcCO2,pCO2_air, p_qhK4K3n,p_qhATo,P_qhK3G4n
+  namelist /CO2_parameters/ MethodCalcCO2,pCO2_air, p_qhK4K3n,p_qhATo,P_qhK3G4n,p_river_O3h_fallback
   !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 
   !BEGIN compute

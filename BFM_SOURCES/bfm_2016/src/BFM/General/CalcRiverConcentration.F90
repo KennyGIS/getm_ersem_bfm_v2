@@ -24,6 +24,14 @@
   use mem, ONLY: ppO3c,ppO3h,ppN4n,ppN3n,ppR6c,ppR6p,ppR6n,ppN1p, &
                  ppB1c,ppBac,ppR9x
   use mem_Param,ONLY:p_qR6cQ9x
+
+!=-=-=-=-=-=-=-=-=-=-=-
+!missing Oh3 fallback added by KLL
+#ifdef INCLUDE_PELCO2
+  use mem_CO2, ONLY:p_river_O3h_fallback
+#endif
+!=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+
 !
 ! !AUTHORS
 !   P. Ruardij
@@ -70,6 +78,7 @@
    if ( mode.eq.0) return
    select case (mode)
      case ( ppO3h)
+       cc_river(:,ppO3h)=max(0.0_RLEN,p_river_O3h_fallback)
      case ( ppO3c)
        ERHO=1027.0;
        ESW=0.3;
