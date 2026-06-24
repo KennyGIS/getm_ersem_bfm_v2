@@ -19,6 +19,8 @@
    use variables_3d, only: sst,sss
    use bdy_3d, only: bdyfile_3d,bdyfmt_3d
    use rivers, only: river_method,nriver,river_data
+   !added KLL 01/05/2026 calls new atmdep_input module
+   use atmdep_input, only: init_atmdep_input, get_atmdep_data
 #endif
    IMPLICIT NONE
 !
@@ -119,6 +121,11 @@
    end if
 #endif
 
+!Added by KLL 01/05/2026 
+#ifndef NO_3D
+   call init_atmdep_input(input_dir,n)
+#endif
+  
    if(bdy2d) then
       call init_2d_bdy(bdyfile_2d,bdyfmt_2d,n)
    end if
@@ -182,6 +189,11 @@
    if(river_method .eq. 2) then
       call get_river_data(n)
    end if
+#endif
+
+!Added KLL 01/05/2026
+#ifndef NO_3D
+   call get_atmdep_data(n)
 #endif
 
    if(bdy2d) then

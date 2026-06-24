@@ -64,7 +64,9 @@
       getm_bfm_bennut_calc_initial,set_2d_grid_parameters,init_2d_grid, &
       make_uv_flux_output,read_poro,diag_end_sections
    use coupling_getm_bfm_rivers,only:make_river_flux_output
-   use mem,only:iiPhytoPlankton,sw_CalcPhyto,R6c
+   use mem,only:iiPhytoPlankton,sw_CalcPhyto,R6c,ppN3n,ppN4n !KL Added ppN3n, ppN4n
+   use atmdep_state, only: use_atmdep, n_atmdep_fields, atmdep_flux, &
+                           atmdep_target_vars !KL shared deposition state
 #else
    use bio, only: init_bio, init_var_bio, set_env_bio, do_bio
    use bio, only: bio_calc
@@ -517,6 +519,7 @@
    integer         :: ltimes !AN
 #ifdef BFM_GOTM
    integer         :: iout,shiftcounter
+   integer         :: atmdep_field,atmdep_tracer
    REALTYPE        :: wind,uv_b,bath_dep
    REALTYPE        :: r,remember
    REALTYPE,dimension(I3DFIELD) :: cc3d_halo
@@ -678,7 +681,24 @@
                adv1d_courant=adv3d_courant(i,j,:)
                adv1d_number=adv3d_number(i,j,:)
              endif
-           endif
+			 !KL Added section below for atmospheric deposition additions
+			 if (use_atmdep) then
+				if (h1d(kmax) > _ZERO_) then
+				   do atmdep_field = 1,n_atmdep_fields
+				      select case (trim(atmdep_target_vars(atmdep_field)))
+				      case ('N3n')
+				         atmdep_tracer = ppN3n
+				      case ('N4n')
+				         atmdep_tracer = ppN4n
+				      case default
+				         stop 'getm_bio: unsupported atmospheric deposition target'
+				      end select
+				      cc(kmax,atmdep_tracer) = cc(kmax,atmdep_tracer) + &
+				         atmdep_flux(i,j,atmdep_field) * dt / h1d(kmax)
+				   enddo
+				endif
+		     endif
+		   endif
            if ( bio_setup >= 2 ) then
                 call set_2d_grid_parameters(read_poro,igrid=i,jgrid=j)
 !JM                ccb(:,:)=ccb3d(:,i,j,:)

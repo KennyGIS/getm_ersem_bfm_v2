@@ -294,7 +294,12 @@ add_library(getm OBJECT
             getm/print_version.F90
            )
 
+add_library(atmdep_state OBJECT
+            input/atmdep_state.F90
+           )
+
 add_library(input OBJECT
+            input/atmdep_input.F90
             input/get_2d_bdy.F90
             input/get_2d_field.F90
             input/get_3d_bdy.F90
@@ -351,6 +356,7 @@ add_library(ncdf OBJECT
             ncdf/ncdf_in.F90
             ncdf/ncdf_mean.F90
             ncdf/ncdf_meteo.F90
+            ncdf/ncdf_atmdep.F90
             ncdf/ncdf_restart.F90
             ncdf/ncdf_rivers.F90
             ncdf/ncdf_ssts.F90
@@ -412,10 +418,10 @@ add_dependencies(2d domain pool waves les)
 add_dependencies(3d meteo domain pool waves 2d les)
 add_dependencies(output futils domain waves 2d 3d meteo)
 add_dependencies(ncdf futils domain waves les output)
-add_dependencies(input futils waves 2d 3d ncdf)
+add_dependencies(input atmdep_state futils waves 2d 3d ncdf)
 add_dependencies(getm futils domain meteo waves les 2d 3d output input)
 
-set_property(TARGET futils ncdf input getm APPEND PROPERTY INCLUDE_DIRECTORIES "${NetCDF_INCLUDE_DIRS}")
+set_property(TARGET futils ncdf input getm atmdep_state APPEND PROPERTY INCLUDE_DIRECTORIES "${NetCDF_INCLUDE_DIRS}")
 
 # Use GOTM_PREFIX to locate include and lib directories
 set(GOTM_EMBED_VERSION ${GETM_EMBED_VERSION} CACHE BOOL "Embed GOTM version information" FORCE)
@@ -486,7 +492,7 @@ if(GOTM_BASE)
     add_library(getm_bio OBJECT
                 3d/getm_bio.F90
                )
-    add_dependencies(getm_bio 3d modify_meteo_bfm coupling_getm_bfm coupling_getm_bfm_rivers global_mod bio)
+    add_dependencies(getm_bio 3d atmdep_state modify_meteo_bfm coupling_getm_bfm coupling_getm_bfm_rivers global_mod bio)
     add_dependencies(3d variables_bio_3d coupling_getm_bfm_rivers bio global_mod)
     add_dependencies(coupling_getm_bfm domain futils 3d)
     add_dependencies(variables_bio_3d domain)
@@ -540,6 +546,7 @@ add_executable(getm_exe
                $<TARGET_OBJECTS:domain>
                $<TARGET_OBJECTS:ncdf>
                $<TARGET_OBJECTS:futils>
+               $<TARGET_OBJECTS:atmdep_state>
 #               $<TARGET_OBJECTS:getm_bio>
               )
 else()
@@ -557,6 +564,7 @@ add_executable(getm_exe
                $<TARGET_OBJECTS:domain>
                $<TARGET_OBJECTS:ncdf>
                $<TARGET_OBJECTS:futils>
+               $<TARGET_OBJECTS:atmdep_state>
                $<TARGET_OBJECTS:getm_bio>
               )
 endif()
