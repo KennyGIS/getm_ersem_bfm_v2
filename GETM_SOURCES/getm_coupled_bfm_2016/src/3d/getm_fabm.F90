@@ -1,0 +1,861 @@
+#ifdef _FABM_
+#include "cppdefs.h"
+#ifdef _OLD_FABM_
+#define _FABM_API_VERSION_ 0
+#else
+#include "fabm_version.h"
+#endif
+!-----------------------------------------------------------------------
+!BOP
+!
+! !MODULE: getm_fabm()
+!
+! !INTERFACE:
+   module getm_fabm
+!
+! !DESCRIPTION:
+!
+! !USES:
+   use parameters, only: rho_0
+   use domain, only: imin,imax,jmin,jmax,kmax
+   use domain, only: ilg,ihg,jlg,jhg,ill,ihl,jll,jhl
+   use domain, only: az,latc,lonc
+   use domain,only: H
+!KB   use get_field, only: get_2d_field,get_3d_field
+   use variables_3d, only: uu,vv,ww,hun,hvn,ho,hn
+   use variables_3d,only: fabm_pel,fabm_ben,fabm_diag,fabm_diag_hz
+   use variables_3d, only: bioshade
+   use variables_3d, only: nuh,T,S,rho,a,g1,g2,taubmax_3d
+   use advection_3d, only: print_adv_settings_3d,do_advection_3d
+   use variables_2d, only: D,fwf_int
+   use meteo, only: swr,wind,evap,precip,tcc
+   use time, only: month,yearday,secondsofday,timestr
+   use halo_zones, only: update_3d_halo,wait_halo,D_TAG,H_TAG
+   use exceptions
+! JORN_FABM
+#ifdef _NEW_GOTM_
+   use gotm_fabm, only: configure_gotm_fabm_from_nml, gotm_fabm_create_model
+#endif
+   use gotm_fabm, only: init_gotm_fabm,set_env_gotm_fabm,do_gotm_fabm
+   use gotm_fabm, only: gotm_fabm_calc=>fabm_calc, model, cc_col=>cc, cc_diag_col=>cc_diag, cc_diag_hz_col=>cc_diag_hz, cc_transport
+#ifdef _NEW_GOTM_
+   use gotm_fabm, only: freshwater_impact
+#else
+   use gotm_fabm, only: no_precipitation_dilution
+#endif
+
+#if _FABM_API_VERSION_ > 0
+   use fabm_v0_compatibility, only: type_horizontal_variable_id, fabm_is_variable_used
+#else
+   use fabm, only: type_horizontal_variable_id, fabm_is_variable_used
+#endif
+   use fabm_types,only: output_instantaneous, output_none
+   use fabm_standard_variables, only: standard_variables
+
+   IMPLICIT NONE
+   private
+!
+! !PUBLIC DATA MEMBERS:
+   public fabm_pel, fabm_ben, fabm_diag, fabm_diag_hz
+   public init_getm_fabm, postinit_getm_fabm, do_getm_fabm, model, output_none
+   public init_getm_fabm_fields
+   public register_fabm_variables, finalize_register_fabm_variables
+   integer, public :: fabm_init_method=0
+   character(len=PATH_MAX)   :: fabm_init_file
+   integer                   :: fabm_init_format, fabm_field_no
+   logical, public :: fabm_calc
+!
+! !PRIVATE DATA MEMBERS:
+   type t_pa3d
+      REALTYPE,dimension(:,:,:),pointer,contiguous :: p3d
+   end type t_pa3d
+   type(t_pa3d),dimension(:),allocatable :: pa_nummix_fabm_pel,pa_phymix_fabm_pel
+   integer         :: fabm_adv_split=0
+   integer         :: fabm_adv_hor=1
+   integer         :: fabm_adv_ver=1
+   integer         :: fabm_AH_method=0
+   REALTYPE        :: fabm_AH_const=1.4d-7
+   REALTYPE        :: fabm_AH_Prt=_TWO_
+   REALTYPE        :: fabm_AH_stirr_const=_ONE_
+   logical,allocatable :: save_nummix_fabm_pel(:),save_phymix_fabm_pel(:)
+   type (type_horizontal_variable_id) :: id_bottom_depth_below_geoid,id_bottom_depth
+
+   type type_input_variable
+      integer                              :: ncid  = -1
+      integer                              :: varid = -1
+      class (type_input_variable), pointer :: next => null()
+   end type
+
+   type,extends(type_input_variable) :: type_horizontal_input_variable
+      REALTYPE, allocatable, dimension(:,:) :: data
+      type (type_horizontal_variable_id)    :: id
+   end type
+
+   class (type_input_variable), pointer, save :: first_input_variable => null()
+
+   integer         :: old_month=-1
+!
+! !REVISION HISTORY:
+!  Original author(s): Hans Burchard & Karsten Bolding
+!
+!EOP
+!-----------------------------------------------------------------------
+
+interface
+   subroutine tracer_diffusion(f,hn,AH_method,AH_const,AH_Prt,AH_stirr_const, &
+                               ffluxu,ffluxv,                                 &
+                               phymix)
+      use domain, only: imin,imax,jmin,jmax,kmax
+      IMPLICIT NONE
+      REALTYPE,intent(in)           :: hn(I3DFIELD)
+      integer,intent(in)            :: AH_method
+      REALTYPE,intent(in)           :: AH_const,AH_Prt,AH_stirr_const
+      REALTYPE,intent(inout)        :: f(I3DFIELD)
+      REALTYPE,dimension(:,:,:),pointer,contiguous,intent(in),optional :: ffluxu,ffluxv
+      REALTYPE,dimension(:,:,:),pointer,contiguous,intent(in),optional :: phymix
+   end subroutine tracer_diffusion
+
+   subroutine inquire_file(fn,ncid,varids,varnames)
+      character(len=*), intent(in)        :: fn
+      integer, intent(inout)              :: ncid
+      integer, allocatable, intent(inout) :: varids(:)
+      character(len=50), allocatable, intent(out) :: varnames(:)
+   end subroutine inquire_file
+
+!KB - only until a proper input_manager has been made
+   subroutine get_2d_field_ncdf_by_id(ncid,varid,il,ih,jl,jh,n,field)
+      integer, intent(in)                 :: ncid,varid
+      integer, intent(in)                 :: il,ih,jl,jh,n
+      REALTYPE, intent(out)               :: field(:,:)
+   end subroutine get_2d_field_ncdf_by_id
+
+! Temporary interface (should be read from module):
+   subroutine get_2d_field(fn,varname,il,ih,jl,jh,break_on_missing,f)
+      character(len=*),intent(in)   :: fn,varname
+      integer, intent(in)           :: il,ih,jl,jh
+      logical, intent(in)           :: break_on_missing
+      REALTYPE, intent(out)         :: f(:,:)
+   end subroutine get_2d_field
+end interface
+
+   contains
+
+!-----------------------------------------------------------------------
+!BOP
+!
+! !IROUTINE: init_getm_fabm
+!
+! !INTERFACE:
+   subroutine init_getm_fabm(nml_file,hotstart)
+!
+! !DESCRIPTION:
+!  Reads the namelist and makes calls to the init functions of the
+!  various model components.
+!
+! !USES:
+   use advection, only: J7
+   use variables_3d, only: deformC_3d,deformX_3d,deformUV_3d,calc_stirr
+   use m2d, only: Am_method,AM_LES
+   use les, only: les_mode,LES_TRACER,LES_BOTH
+   IMPLICIT NONE
+!
+! !INPUT PARAMETERS:
+   character(len=*), intent(in)   :: nml_file
+   logical,intent(in)             :: hotstart
+!
+! !REVISION HISTORY:
+!  See the log for the module
+!
+!  !LOCAL VARIABLES
+   integer, parameter        :: unit_fabm=63
+   integer                   :: rc
+   integer                   :: n
+#ifdef INPUT_DIR
+   character(len=PATH_MAX)   :: input_dir=trim(INPUT_DIR) // '/'
+#else
+   character(len=PATH_MAX)   :: input_dir=''
+#endif
+   character(len=PATH_MAX)   :: fabm_surface_flux_file=""
+   integer                   :: ncid
+   integer, allocatable      :: varids(:)
+   character(len=50), allocatable :: varnames(:)
+
+   namelist /getm_fabm_nml/ fabm_init_method, &
+                           fabm_init_file,fabm_init_format,fabm_field_no, &
+                           fabm_surface_flux_file, &
+                           fabm_adv_split,fabm_adv_hor,fabm_adv_ver,      &
+                           fabm_AH_method,fabm_AH_const,fabm_AH_Prt,      &
+                           fabm_AH_stirr_const
+!EOP
+!-------------------------------------------------------------------------
+!BOC
+   LEVEL2 'init_getm_fabm()'
+
+!  Initialize FABM.
+#ifdef _NEW_GOTM_
+   call configure_gotm_fabm_from_nml(NAMLST2,trim(input_dir)//'gotm_fabm.nml')
+   call gotm_fabm_create_model(NAMLST2)
+   call init_gotm_fabm(kmax)
+#else
+   call init_gotm_fabm(kmax,NAMLST2,trim(input_dir)//'gotm_fabm.nml')
+#endif
+
+!  Store fabm_calc and model for use by GETM
+   fabm_calc = gotm_fabm_calc
+
+   if (fabm_calc) then
+
+      id_bottom_depth_below_geoid = model%get_horizontal_variable_id(standard_variables%bottom_depth_below_geoid)
+      id_bottom_depth = model%get_horizontal_variable_id(standard_variables%bottom_depth)
+
+!     Temporary: make sure diagnostic variables store the last value,
+!     not their time integral. This will be redundant when time-integrating/averaging
+!     is moved from FABM to the physical host.
+      do n=1,size(model%diagnostic_variables)
+         if (model%diagnostic_variables(n)%output/=output_none) &
+            model%diagnostic_variables(n)%output = output_instantaneous
+      end do
+      do n=1,size(model%horizontal_diagnostic_variables)
+         if (model%horizontal_diagnostic_variables(n)%output/=output_none) &
+            model%horizontal_diagnostic_variables(n)%output = output_instantaneous
+      end do
+
+!     Allocate memory for pelagic state variables.
+      allocate(fabm_pel(I3DFIELD,size(model%state_variables)),stat=rc)
+      if (rc /= 0) stop 'init_getm_fabm: Error allocating memory (fabm_pel)'
+      fabm_pel = _ZERO_
+
+!     Allocate memory for benthic state variables.
+      allocate(fabm_ben(I2DFIELD,size(model%bottom_state_variables)),stat=rc)
+      if (rc /= 0) stop 'init_getm_fabm: Error allocating memory (fabm_ben)'
+      fabm_ben = _ZERO_
+
+!     Allocate memory for 3D diagnostic variables.
+      allocate(fabm_diag(I3DFIELD,size(model%diagnostic_variables)),stat=rc)
+      if (rc /= 0) stop 'init_getm_fabm: Error allocating memory (fabm_diag)'
+      fabm_diag = _ZERO_
+
+!     Allocate memory for 2D [horizontal-only] diagnostic variables.
+      allocate(fabm_diag_hz(I2DFIELD,size(model%horizontal_diagnostic_variables)),stat=rc)
+      if (rc /= 0) stop 'init_getm_fabm: Error allocating memory (fabm_diag_hz)'
+      fabm_diag_hz = _ZERO_
+
+!     Read settings specific to GETM-FABM interaction.
+      open(NAMLST2,status='unknown',file=trim(nml_file))
+      read(NAMLST2,NML=getm_fabm_nml)
+      close(NAMLST2)
+
+!     Show settings specific to GETM-FABM interaction.
+      LEVEL2 'Advection of FABM variables'
+      if (fabm_adv_hor .eq. J7) stop 'init_getm_fabm: J7 not implemented yet'
+      call print_adv_settings_3d(fabm_adv_split,fabm_adv_hor,fabm_adv_ver,fabm_AH_const)
+
+      select case (fabm_AH_method)
+         case(0)
+            LEVEL3 'fabm_AH_method=0 -> horizontal diffusion disabled'
+         case(1)
+            LEVEL3 'fabm_AH_method=1 -> Using constant horizontal diffusivity'
+            if (fabm_AH_const .lt. _ZERO_) then
+                 call getm_error("init_getm_fabm()", &
+                            "Constant horizontal diffusivity <0");
+            end if
+            LEVEL4 real(fabm_AH_const)
+         case(2)
+            LEVEL3 'fabm_AH_method=2 -> using LES parameterisation'
+            LEVEL4 'Turbulent Prandtl number: ',real(fabm_AH_Prt)
+            deformC_3d =.true.
+            deformX_3d =.true.
+            deformUV_3d=.true.
+            if (Am_method .eq. AM_LES) then
+               les_mode = LES_BOTH
+            else
+               les_mode = LES_TRACER
+            end if
+         case(3)
+            LEVEL3 'fabm_AH_method=3 -> SGS stirring parameterisation'
+            if (fabm_AH_stirr_const .lt. _ZERO_) then
+                 call getm_error("init_getm_fabm()", &
+                            "fabm_AH_stirr_const <0");
+            end if
+            LEVEL4 'stirring constant: ',real(fabm_AH_stirr_const)
+            deformC_3d =.true.
+            deformX_3d =.true.
+            deformUV_3d=.true.
+            calc_stirr=.true.
+         case default
+            call getm_error("init_getm_fabm()", &
+                            "A non valid fabm_AH_method has been chosen");
+      end select
+
+      allocate(save_nummix_fabm_pel(size(model%state_variables)),stat=rc)
+      if (rc /= 0) stop 'init_getm_fabm: Error allocating memory (save_nummix_fabm_pel)'
+      save_nummix_fabm_pel=.false.
+      allocate(save_phymix_fabm_pel(size(model%state_variables)),stat=rc)
+      if (rc /= 0) stop 'init_getm_fabm: Error allocating memory (save_phymix_fabm_pel)'
+      save_phymix_fabm_pel=.false.
+      allocate(pa_nummix_fabm_pel(size(model%state_variables)),stat=rc)
+      if (rc /= 0) stop 'init_getm_fabm: Error allocating memory (pa_nummix_fabm_pel)'
+      allocate(pa_phymix_fabm_pel(size(model%state_variables)),stat=rc)
+      if (rc /= 0) stop 'init_getm_fabm: Error allocating memory (pa_phymix_fabm_pel)'
+      do n=1,size(model%state_variables)
+         pa_nummix_fabm_pel(n)%p3d => null()
+         pa_phymix_fabm_pel(n)%p3d => null()
+      end do
+
+!     Here we need to open the NetCDF file with FABM forcing data (if it exists)
+!     and loop over all its variables.
+!     For now 2D only, so make sure each NetCDF variable is 2D.
+!     For each variable, register_horizontal_input_variable should be called (see below).
+!     That looks up the FABM variable and also allocates the 2D field that will hold the input data.
+
+      LEVEL2 'FABM input and forcing ...'
+      if (len_trim(fabm_surface_flux_file) .ne. 0) then
+         call inquire_file(fabm_surface_flux_file,ncid,varids,varnames)
+         do n=1,size(varids)
+            if ( varids(n) .ne. -1) then
+               call register_horizontal_input_variable(trim(varnames(n))//'_flux',ncid,varids(n),rc)
+               if (rc .eq. 0) then
+                  LEVEL4 'remember to add external_surface_flux model to fabm.yaml'
+               end if
+            end if
+         end do
+      else
+         LEVEL3 'no file with FABM surface fluxes specified in getm_fabm.inp'
+      end if
+
+!     Initialize biogeochemical state variables.
+      if (.not. hotstart) then
+         call init_getm_fabm_fields()
+      end if
+
+   end if
+
+   end subroutine init_getm_fabm
+!EOC
+!-----------------------------------------------------------------------
+!BOP
+!
+! !IROUTINE: init_getm_fabm_fields - initialisation of the fabm fields
+! \label{sec-init-getm-fabm-fields}
+!
+! !INTERFACE:
+   subroutine init_getm_fabm_fields()
+!
+! !DESCRIPTION:
+! Initialisation of the getm-fabm fields as specified by fabm\_init\_method
+! and exchange of the HALO zones
+!
+! !USES:
+   IMPLICIT NONE
+!
+! !INPUT PARAMETERS:
+!
+! !INPUT/OUTPUT PARAMETERS:
+!
+! !OUTPUT PARAMETERS:
+!
+! !LOCAL VARIABLES:
+   integer                   :: i,j,n
+!EOP
+!-------------------------------------------------------------------------
+!BOC
+
+      select case (fabm_init_method)
+         case(0)
+            LEVEL3 'getting initial biogeochemical fields from hotstart file'
+         case(1,2)
+            LEVEL3 "initial biogeochemical fields from namelists - fabm.nml"
+            do j=jmin,jmax
+               do i=imin,imax
+                  if (az(i,j) .ge. 1 ) then
+                     do n=1,size(model%state_variables)
+                        fabm_pel(i,j,:,n) = cc_col(:,n)
+                     end do
+                     do n=1,size(model%bottom_state_variables)
+                        fabm_ben(i,j,  n) = cc_col(1,size(model%state_variables)+n)
+                     end do
+                  end if
+               end do
+            end do
+            if (fabm_init_method .eq. 2) then
+               LEVEL3 'now checking initial fields from ',trim(fabm_init_file)
+               do n=1,size(model%state_variables)
+                  LEVEL4 'inquiring: ',trim(model%state_variables(n)%name)
+                  call get_3d_field(fabm_init_file, &
+                                 trim(model%state_variables(n)%name), &
+                                 fabm_field_no,.false., &
+                                 fabm_pel(:,:,:,n))
+               end do
+               do n=1,size(model%bottom_state_variables)
+                  LEVEL4 'inquiring: ',trim(model%bottom_state_variables(n)%name)
+                  call get_2d_field(fabm_init_file, &
+                                 trim(model%bottom_state_variables(n)%name), &
+                                 ilg,ihg,jlg,jhg,.false., &
+                                 fabm_ben(ill:ihl,jll:jhl,n))
+               end do
+            end if
+         case default
+            FATAL 'Not valid fabm_init_method specified'
+            stop 'init_getm_fabm_fields()'
+      end select
+
+!     Update halos with biogeochemical variable values (distribute initial values).
+      do n=1,size(model%state_variables)
+         fabm_pel(:,:,0,n) = model%state_variables(n)%missing_value
+         forall(i=imin:imax,j=jmin:jmax, az(i,j).eq.0) &
+            fabm_pel(i,j,:,n) = model%state_variables(n)%missing_value
+         call update_3d_halo(fabm_pel(:,:,:,n),fabm_pel(:,:,:,n),az, &
+                             imin,jmin,imax,jmax,kmax,D_TAG)
+         call wait_halo(D_TAG)
+      end do
+      do n=1,size(model%bottom_state_variables)
+         where ( az.eq.0 ) fabm_ben(:,:,n) = model%bottom_state_variables(n)%missing_value
+      end do
+      do n=1,size(model%diagnostic_variables)
+         fabm_diag(:,:,0,n) = model%diagnostic_variables(n)%missing_value
+         forall(i=imin:imax,j=jmin:jmax, az(i,j).eq.0) &
+            fabm_diag(i,j,:,n) = model%diagnostic_variables(n)%missing_value
+      end do
+      do n=1,size(model%horizontal_diagnostic_variables)
+         where ( az.eq.0 ) fabm_diag_hz(:,:,n) = model%horizontal_diagnostic_variables(n)%missing_value
+      end do
+
+#ifdef DEBUG
+   write(debug,*) 'Leaving init_getm_fabm_fields()'
+   write(debug,*)
+#endif
+   return
+   end subroutine init_getm_fabm_fields
+!EOC
+
+!-----------------------------------------------------------------------
+!BOP
+!
+! !ROUTINE: register_fabm_variables() - register FABM variables.
+!
+! !INTERFACE:
+   subroutine register_fabm_variables(fm)
+!
+! !DESCRIPTION:
+!
+! !USES:
+   use field_manager
+   IMPLICIT NONE
+!
+! !INPUT PARAMETERS:
+   type (type_field_manager) :: fm
+!
+! !REVISION HISTORY:
+!  Original author(s): Karsten Bolding & Jorn Bruggeman
+!
+! !LOCAL VARIABLES:
+  integer :: i,output_level
+  logical :: in_output
+!EOP
+!-----------------------------------------------------------------------
+!BOC
+   if (.not. fabm_calc) return
+   LEVEL2 'register_fabm_variables()'
+
+   do i=1,size(model%state_variables)
+      output_level = output_level_default
+      if (model%state_variables(i)%output==output_none) output_level = output_level_debug
+      call fm%register(model%state_variables(i)%name, model%state_variables(i)%units, &
+         model%state_variables(i)%long_name, minimum=model%state_variables(i)%minimum, maximum=model%state_variables(i)%maximum, &
+         fill_value=model%state_variables(i)%missing_value, dimensions=(/id_dim_z/), data3d=fabm_pel(_3D_W_,i), category='fabm'//model%state_variables(i)%target%owner%get_path(), output_level=output_level)
+   end do
+   do i=1,size(model%bottom_state_variables)
+      output_level = output_level_default
+      if (model%bottom_state_variables(i)%output==output_none) output_level = output_level_debug
+      call fm%register(model%bottom_state_variables(i)%name, model%bottom_state_variables(i)%units, &
+         model%bottom_state_variables(i)%long_name, minimum=model%bottom_state_variables(i)%minimum, &
+         maximum=model%bottom_state_variables(i)%maximum, fill_value=model%bottom_state_variables(i)%missing_value, &
+         data2d=fabm_ben(_2D_W_,i), category='fabm'//model%bottom_state_variables(i)%target%owner%get_path(), output_level=output_level)
+   end do
+   do i=1,size(model%diagnostic_variables)
+      output_level = output_level_default
+      if (model%diagnostic_variables(i)%output==output_none) output_level = output_level_debug
+      call fm%register(model%diagnostic_variables(i)%name, model%diagnostic_variables(i)%units, &
+         model%diagnostic_variables(i)%long_name, minimum=model%diagnostic_variables(i)%minimum, maximum=model%diagnostic_variables(i)%maximum, &
+         fill_value=model%diagnostic_variables(i)%missing_value, dimensions=(/id_dim_z/), data3d=fabm_diag(_3D_W_,i), category='fabm'//model%diagnostic_variables(i)%target%owner%get_path(), output_level=output_level, used=in_output)
+      if (in_output) model%diagnostic_variables(i)%save = .true.
+   end do
+   do i=1,size(model%horizontal_diagnostic_variables)
+      output_level = output_level_default
+      if (model%horizontal_diagnostic_variables(i)%output==output_none) output_level = output_level_debug
+      call fm%register(model%horizontal_diagnostic_variables(i)%name, model%horizontal_diagnostic_variables(i)%units, &
+         model%horizontal_diagnostic_variables(i)%long_name, minimum=model%horizontal_diagnostic_variables(i)%minimum, maximum=model%horizontal_diagnostic_variables(i)%maximum, &
+         fill_value=model%horizontal_diagnostic_variables(i)%missing_value, data2d=fabm_diag_hz(_2D_W_,i), category='fabm'//model%horizontal_diagnostic_variables(i)%target%owner%get_path(), output_level=output_level, used=in_output)
+      if (in_output) model%horizontal_diagnostic_variables(i)%save = .true.
+   end do
+
+   do i=1,size(model%state_variables)
+      call fm%register('nummix_'//trim(model%state_variables(i)%name),                           &
+                       'm*('//trim(model%state_variables(i)%units)//')**2/s',                    &
+                       'numerical mixing content of '//trim(model%state_variables(i)%long_name), &
+                       dimensions=(/id_dim_z/),                                                  &
+                       category='fabm'//model%state_variables(i)%target%owner%get_path(),        &
+                       output_level=output_level_debug,                                          &
+                       used=save_nummix_fabm_pel(i))
+      call fm%register('phymix_'//trim(model%state_variables(i)%name),                          &
+                       'm*('//trim(model%state_variables(i)%units)//')**2/s',                   &
+                       'physical mixing content of '//trim(model%state_variables(i)%long_name), &
+                       dimensions=(/id_dim_z/),                                                 &
+                       category='fabm'//model%state_variables(i)%target%owner%get_path(),       &
+                       output_level=output_level_debug,                                         &
+                       used=save_phymix_fabm_pel(i))
+   end do
+
+   return
+   end subroutine register_fabm_variables
+!EOC
+
+!-----------------------------------------------------------------------
+!BOP
+!
+! !ROUTINE: finalize_register_fabm_variables() - send optional variables.
+!
+! !INTERFACE:
+   subroutine finalize_register_fabm_variables(fm)
+!
+! !DESCRIPTION:
+!
+! !USES:
+   use field_manager
+   IMPLICIT NONE
+!
+! !INPUT PARAMETERS:
+   type (type_field_manager) :: fm
+!
+! !REVISION HISTORY:
+!  Original author(s): Karsten Bolding & Jorn Bruggeman
+!
+! !LOCAL VARIABLES:
+   integer :: i
+!EOP
+!-----------------------------------------------------------------------
+!BOC
+   if (.not. fabm_calc) return
+   LEVEL1 'finalize_register_fabm_variables()'
+
+   do i=1,size(model%state_variables)
+      if (associated(pa_nummix_fabm_pel(i)%p3d)) call fm%send_data('nummix_'//trim(model%state_variables(i)%name), pa_nummix_fabm_pel(i)%p3d(_3D_W_))
+      if (associated(pa_phymix_fabm_pel(i)%p3d)) call fm%send_data('phymix_'//trim(model%state_variables(i)%name), pa_phymix_fabm_pel(i)%p3d(_3D_W_))
+   end do
+
+   return
+   end subroutine finalize_register_fabm_variables
+!EOC
+
+!-----------------------------------------------------------------------
+!BOP
+!
+! !IROUTINE: register_horizontal_input_variable
+!
+! !INTERFACE:
+   subroutine register_horizontal_input_variable(name,ncid,varid,rc)
+!
+! !DESCRIPTION:
+!  Registers FABM horizontal fluxes (surface)
+!
+! !USES:
+   IMPLICIT NONE
+!
+! !INPUT PARAMETERS:
+   character(len=*),intent(in) :: name
+   integer,         intent(in) :: ncid,varid
+!
+! !OUTPUT PARAMETERS:
+   integer,         intent(out) :: rc
+!
+! !REVISION HISTORY:
+!  See the log for the module
+!
+!  !LOCAL VARIABLES
+      class (type_horizontal_input_variable), pointer :: variable
+!EOP
+!-------------------------------------------------------------------------
+!BOC
+!  Create the input variable and set associated data (FABM id, 
+!  NetCDF id, 2D data field).
+   allocate(variable)
+   variable%id = model%get_horizontal_variable_id(name)
+   if (.not.fabm_is_variable_used(variable%id)) then
+      LEVEL4 'register: no - ',trim(name)//' is not used by this FABM configuration.'
+!      stop 'register_horizontal_input_variable: unrecognized variable name'
+      deallocate(variable)
+      rc = 1
+   else
+      LEVEL4 'register: yes - ',trim(name)
+      variable%ncid  = ncid
+      variable%varid = varid
+      allocate(variable%data(I2DFIELD))
+      variable%data = _ZERO_
+
+      ! Prepend to the list of inout variables.
+      variable%next => first_input_variable
+      first_input_variable => variable
+      rc = 0
+   end if
+   return
+   end subroutine register_horizontal_input_variable
+!EOC
+
+!-----------------------------------------------------------------------
+!BOP
+!
+! !IROUTINE: postinit_getm_fabm -
+!
+! !INTERFACE:
+   subroutine postinit_getm_fabm()
+! !USES:
+   use variables_3d, only: save_phymix_3d
+   IMPLICIT NONE
+!
+! !DESCRIPTION:
+!
+! !LOCAL VARIABLES:
+   integer                   :: rc
+   integer                   :: n
+!EOP
+!-------------------------------------------------------------------------
+!BOC
+#ifdef DEBUG
+   integer, save :: Ncall = 0
+   Ncall = Ncall+1
+   write(debug,*) 'postinit_getm_fabm() # ',Ncall
+#endif
+
+   LEVEL1 'postinit_getm_fabm'
+
+   do n=1,size(model%state_variables)
+      if (save_nummix_fabm_pel(n)) then
+         allocate(pa_nummix_fabm_pel(n)%p3d(I3DFIELD),stat=rc)
+         if (rc /= 0) stop 'postinit_getm_fabm: Error allocating memory (nummix_fabm_pel)'
+         pa_nummix_fabm_pel(n)%p3d = _ZERO_
+      end if
+      if (save_phymix_fabm_pel(n)) then
+         save_phymix_3d = .true.
+         allocate(pa_phymix_fabm_pel(n)%p3d(I3DFIELD),stat=rc)
+         if (rc /= 0) stop 'postinit_getm_fabm: Error allocating memory (phymix_fabm_pel)'
+         pa_phymix_fabm_pel(n)%p3d = _ZERO_
+      end if
+   end do
+
+   return
+   end subroutine postinit_getm_fabm
+!EOC
+
+!-----------------------------------------------------------------------
+!BOP
+!
+! !IROUTINE:  do_getm_fabm()
+!
+! !INTERFACE:
+   subroutine do_getm_fabm(dt)
+!
+! !DESCRIPTION:
+!
+! !USES:
+   use getm_timers, only: tic, toc, TIM_GETM_FABM, TIM_ADVECTFABM
+   IMPLICIT NONE
+!
+! !INPUT PARAMETERS:
+   REALTYPE, intent(in)                :: dt
+!
+! !REVISION HISTORY:
+!  See the log for the module
+!
+! !LOCAL VARIABLES:
+   integer         :: n
+   integer         :: i,j,k
+   REALTYPE        :: I_0,taub_nonnorm,cloud
+   REALTYPE        :: z(1:kmax)
+   REALTYPE,dimension(I2DFIELD) :: work2d
+   class (type_input_variable), pointer :: current_input_variable
+   integer         :: ncid,varid
+   logical         :: some_var_ok=.false.
+   REALTYPE,parameter :: zero=_ZERO_
+!EOP
+!-----------------------------------------------------------------------
+!BOC
+#ifdef SLICE_MODEL
+   j = jmax/2 ! this MUST NOT be changed!!!
+#endif
+   call tic(TIM_GETM_FABM)
+
+!  First update all input fields
+   if (month .ne. old_month) then
+      old_month = month
+      current_input_variable => first_input_variable
+      do while (associated(current_input_variable))
+         select type (current_input_variable)
+            class is (type_horizontal_input_variable)
+               ncid  = current_input_variable%ncid
+               varid = current_input_variable%varid
+               if (ncid .gt. 0 .and. varid .gt. 0) then
+                  some_var_ok = .true.
+                  call get_2d_field_ncdf_by_id(ncid,varid,ilg,ihg,jlg,jhg,month, &
+                                               current_input_variable%data(ill:ihl,jll:jhl))
+               end if
+         end select
+         current_input_variable => current_input_variable%next
+      end do
+      if (some_var_ok) then
+         LEVEL3 timestr,': reading FABM surface fluxes ...',month
+      end if
+   end if
+
+
+   do n=1,size(model%state_variables)
+#ifdef _NEW_GOTM_
+      if (freshwater_impact .and. .not. model%state_variables(n)%no_precipitation_dilution) then
+#else
+      if (.not. (model%state_variables(n)%no_precipitation_dilution .or. no_precipitation_dilution)) then
+#endif
+#ifndef SLICE_MODEL
+         do j=jmin-HALO,jmax+HALO
+#endif
+            do i=imin-HALO,imax+HALO
+               if (az(i,j) .eq. 1) then
+                  fabm_pel(i,j,kmax,n) = fabm_pel(i,j,kmax,n)*(_ONE_-fwf_int(i,j)/ho(i,j,kmax))
+               end if
+            end do
+#ifndef SLICE_MODEL
+         end do
+#endif
+      end if
+   end do
+
+!  Advect pelagic biogeochemical variables.
+   call tic(TIM_ADVECTFABM)
+   do n=1,size(model%state_variables)
+
+      if (cc_transport(n)) then
+         call update_3d_halo(fabm_pel(:,:,:,n),fabm_pel(:,:,:,n),az, &
+                             imin,jmin,imax,jmax,kmax,D_TAG)
+         call wait_halo(D_TAG)
+
+         call do_advection_3d(dt,fabm_pel(:,:,:,n),uu,vv,ww,hun,hvn,ho,hn,           &
+                              fabm_adv_split,fabm_adv_hor,fabm_adv_ver,_ZERO_,H_TAG, &
+                              nvd=pa_nummix_fabm_pel(n)%p3d)
+
+         if (fabm_AH_method .gt. 0) then
+            call update_3d_halo(fabm_pel(:,:,:,n),fabm_pel(:,:,:,n),az,imin,jmin,imax,jmax,kmax,D_TAG)
+            call wait_halo(D_TAG)
+            call tracer_diffusion(fabm_pel(:,:,:,n),hn,fabm_AH_method,fabm_AH_const,fabm_AH_Prt,fabm_AH_stirr_const, &
+                                  phymix=pa_phymix_fabm_pel(n)%p3d)
+         end if
+
+         if (associated(pa_phymix_fabm_pel(n)%p3d)) then
+            call physical_mixing(fabm_pel(:,:,:,n),_ZERO_,pa_phymix_fabm_pel(n)%p3d,fabm_AH_method)
+         end if
+
+      end if
+
+   end do
+   call toc(TIM_ADVECTFABM)
+
+
+!  First we do all the vertical processes
+#ifndef SLICE_MODEL
+   do j=jmin,jmax
+#endif
+      do i=imin,imax
+         if (az(i,j) .eq. 1 ) then
+
+!           Get surface short-wave radiation.
+            if (allocated(swr)) then
+               I_0 = swr(i,j)
+            else
+               I_0 = _ZERO_
+            end if
+
+            if (allocated(tcc)) then
+               cloud = tcc(i,j)
+            else
+               cloud = _ZERO_
+            end if
+
+!           Calculate depths of cell centers from layer heights.
+            z(kmax) = -_HALF_*hn(i,j,kmax)
+            do k=kmax-1,1,-1
+               z(k) = z(k+1) - _HALF_*(hn(i,j,k+1)+hn(i,j,k))
+            end do
+
+!           Calculate actual bottom stress from normalized bottom stress (taub/rho_0)
+            taub_nonnorm = taubmax_3d(i,j)*rho_0
+
+!           Copy current values of biogeochemical variables from full 3D field to columns.
+            do n=1,size(model%state_variables)
+               cc_col(:,n) = fabm_pel(i,j,:,n)
+            end do
+            do n=1,size(model%bottom_state_variables)
+               cc_col(1,size(model%state_variables)+n) = fabm_ben(i,j,n)
+            end do
+            do n=1,size(model%diagnostic_variables)
+               cc_diag_col(:,n) = fabm_diag(i,j,1:,n)
+            end do
+            do n=1,size(model%horizontal_diagnostic_variables)
+               cc_diag_hz_col(n) = fabm_diag_hz(i,j,n)
+            end do
+
+!           Transfer pointers to physical environment variables to FABM.
+            call set_env_gotm_fabm(latc(i,j),lonc(i,j),dt,0,0,T(i,j,1:),S(i,j,1:), &
+                                   rho(i,j,1:),nuh(i,j,0:),hn(i,j,0:),ww(i,j,0:), &
+                                   bioshade(i,j,1:),I_0,cloud,taub_nonnorm,wind(i,j),zero,zero, &
+                                   z,A(i,j),g1(i,j),g2(i,j),yearday,secondsofday)
+            call model%link_horizontal_data(id_bottom_depth_below_geoid,H(i,j))
+            call model%link_horizontal_data(id_bottom_depth,D(i,j))
+
+!           Transfer prescribed input variables
+            current_input_variable => first_input_variable
+            do while (associated(current_input_variable))
+               select type (current_input_variable)
+               class is (type_horizontal_input_variable)
+                  call model%link_horizontal_data(current_input_variable%id,current_input_variable%data(i,j))
+               end select
+               current_input_variable => current_input_variable%next
+            end do
+
+!           Update biogeochemical variable values.
+            call do_gotm_fabm(kmax)
+
+!           Copy updated column values of biogeochemical variables to full 3D field.
+            do n=1,size(model%state_variables)
+               fabm_pel(i,j,:,n) = cc_col(:,n)
+            end do
+            do n=1,size(model%bottom_state_variables)
+               fabm_ben(i,j,n) = cc_col(1,size(model%state_variables)+n)
+            end do
+            do n=1,size(model%diagnostic_variables)
+               fabm_diag(i,j,1:,n) = cc_diag_col(:,n)
+            end do
+            do n=1,size(model%horizontal_diagnostic_variables)
+               fabm_diag_hz(i,j,n) = cc_diag_hz_col(n)
+            end do
+
+         end if
+      end do
+#ifndef SLICE_MODEL
+   end do
+#else
+      do i=imin,imax
+         fabm_pel(i,j+1,:,:)=fabm_pel(i,j,:,:)
+         fabm_ben(i,j+1,:)  =fabm_ben(i,j,:)
+      end do
+#endif
+
+   call toc(TIM_GETM_FABM)
+
+   end subroutine do_getm_fabm
+!EOC
+
+!-----------------------------------------------------------------------
+
+   end module getm_fabm
+#endif
+
+!-----------------------------------------------------------------------
+! Copyright (C) 2007 - Karsten Bolding and Hans Burchard               !
+!-----------------------------------------------------------------------

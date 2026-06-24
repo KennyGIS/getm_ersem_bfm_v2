@@ -1,0 +1,33 @@
+  # Build products
+  build/
+  tools/getm/build/
+  local/
+  *.o
+  *.mod
+  *.smod
+  *.a
+  *.so
+  CMakeCache.txt
+  CMakeFiles/
+  cmake_install.cmake
+
+  # Runtime data and output
+  out/
+  log/
+  logs/
+  model_out/
+  restart/
+  restart*/
+  *.nc
+  *.nc4
+  *.cdf
+  *.grib
+  *.grb
+  core.*
+  *.stdout
+  *.stderr
+
+  # Temporary files
+  *~
+  *.swp
+  *.swo

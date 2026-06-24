@@ -1,0 +1,34 @@
+\subsection{Tracer advection}
+
+After multiplying (\ref{C_Layer_IntCurvi}) with $mn$, the advective 
+terms in this equation are discretised as follows. 
+
+First advection term in (\ref{C_Layer_IntCurvi}):
+\begin{equation}
+\left(mn\,\partial_{\cal X}\left(\frac{p_kc_k}{n}\right)\right)_{i,j}\approx 
+\frac{
+p_{i,j,k}\tilde c_{i,j,k}\Delta y^u_{i,j}-
+p_{i-1,j,k}\tilde c_{i-1,j,k}\Delta y^u_{i-1,j}
+}{\Delta x^c_{i,j}\Delta y^c_{i,j}}
+\end{equation}
+
+Second advection term in (\ref{C_Layer_IntCurvi}):
+\begin{equation}
+\left(mn\,\partial_{\cal Y}\left(\frac{q_kc_k}{m}\right)\right)_{i,j}\approx 
+\frac{
+q_{i,j,k}\tilde c_{i,j,k}\Delta y^v_{i,j}-
+q_{i,j-1,k}\tilde c_{i,j-1,k}\Delta y^v_{i,j-1}
+}{\Delta x^c_{i,j}\Delta y^c_{i,j}}
+\end{equation}
+
+Vertical advective fluxes in (\ref{C_Layer_IntCurvi}):
+\begin{equation}
+\left(\bar w_{k} \tilde c_{k}\right)_{i,j}\approx
+w_{i,j,k})\tilde c_{i,j,k}. 
+\end{equation}
+
+The interfacial concentrations $\tilde c_{i,j,k}$ are calculated 
+according to upwind or higher order directional split
+schemes, which are discussed in detail in section 
+\ref{SectionHigherOrder}. 
+

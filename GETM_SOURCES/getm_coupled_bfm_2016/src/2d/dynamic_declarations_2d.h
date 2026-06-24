@@ -1,0 +1,27 @@
+#ifdef USE_BREAKS
+  integer,dimension(:,:),allocatable   :: break_mask
+  integer,dimension(:,:),allocatable   :: break_stat
+#endif
+  REALTYPE,dimension(:,:),allocatable,target :: D,Dvel,DU,DV
+#ifndef _POINTER_ZZO_
+  REALTYPE,dimension(:,:),allocatable  :: z,zo
+#else
+  REALTYPE,dimension(:,:),allocatable,target :: t_z,t_zo
+#endif
+  REALTYPE,dimension(:,:),allocatable,target  :: U,V
+  REALTYPE,dimension(:,:),allocatable  :: UEx,VEx
+  REALTYPE,dimension(:,:),allocatable,target :: velu,velv
+  REALTYPE,dimension(:,:),allocatable,target :: velx,vely
+  REALTYPE,dimension(:,:),allocatable  :: ru,rv
+  REALTYPE,dimension(:,:),allocatable,target :: Uint,Vint
+  REALTYPE,dimension(:,:),allocatable  :: res_du,res_u
+  REALTYPE,dimension(:,:),allocatable  :: res_dv,res_v
+  REALTYPE,dimension(:,:),allocatable  :: SlUx,SlVx
+  REALTYPE,dimension(:,:),allocatable  :: Slru,Slrv
+  REALTYPE,dimension(:,:),allocatable  :: fwf,fwf_int
+
+  REALTYPE,dimension(:),  allocatable:: EWbdy,ENbdy,EEbdy,ESbdy
+
+! Remember to update this value if you add more 2D arrays.
+  integer, parameter :: n2d_fields=27
+

@@ -1,0 +1,429 @@
+#include "cppdefs.h"
+!-----------------------------------------------------------------------
+!BOP
+!
+! !ROUTINE: uv_advect - 2D advection of momentum \label{sec-uv-advect}
+!
+! !INTERFACE:
+   subroutine uv_advect(velu,velv,U,V,D,Dvel,DU,DV,numdis)
+
+!  Note (KK): keep in sync with interface in m2d.F90
+!
+! !DESCRIPTION:
+!
+! Wrapper to prepare and do calls to {\tt do\_advection} (see section
+! \ref{sec-do-advection} on page \pageref{sec-do-advection}) to
+! calculate the advection terms of the depth-averaged velocities.
+!
+! !USES:
+   use domain, only: imin,imax,jmin,jmax,az,au,av,ax
+   use domain, only: dxv,dyu,arcd1,arud1,arvd1
+   use m2d, only: vel2d_adv_split,vel2d_adv_hor
+   use variables_2d, only: dtm
+   use variables_2d, only: UEx,VEx
+   use advection, only: NOADV,UPSTREAM,J7
+   use advection, only: adv_gridU,adv_gridV,do_advection
+   use halo_zones, only: update_2d_halo,wait_halo,U_TAG,V_TAG
+   use getm_timers, only: tic,toc,TIM_UVADV,TIM_UVADVH
+!$ use omp_lib
+   IMPLICIT NONE
+!
+! !INPUT PARAMETERS:
+   REALTYPE,dimension(E2DFIELD),intent(in)        :: velu,velv,U,V
+   REALTYPE,dimension(E2DFIELD),target,intent(in) :: D,Dvel,DU,DV
+!
+! !OUTPUT PARAMETERS:
+   REALTYPE,dimension(:,:),pointer,contiguous,intent(in),optional :: numdis
+!
+! !REVISION HISTORY:
+!  Original author(s): Hans Burchard & Karsten Bolding
+!
+! !LOCAL VARIABLES:
+   logical                                    :: calc_numdis
+   integer                                    :: i,j
+   REALTYPE,dimension(E2DFIELD)               :: fadv,Uadv,Vadv
+   REALTYPE,dimension(E2DFIELD),target        :: Dadv,DUadv,DVadv,nvd
+   REALTYPE,dimension(:,:),pointer,contiguous :: pDadv,pDUadv,pDVadv,p_nvd
+!EOP
+!-----------------------------------------------------------------------
+!BOC
+#ifdef DEBUG
+   integer, save :: Ncall = 0
+   Ncall = Ncall+1
+   write(debug,*) 'uv_advect() # ',Ncall
+#endif
+#ifdef SLICE_MODEL
+   j = jmax/2 ! this MUST NOT be changed!!!
+#endif
+   call tic(TIM_UVADV)
+
+   if (present(numdis)) then
+      calc_numdis = associated(numdis)
+   else
+      calc_numdis = .false.
+   end if
+      
+   if (calc_numdis) then
+      p_nvd => nvd
+   else
+      p_nvd => null()
+   end if
+   
+
+   if (vel2d_adv_hor .ne. NOADV) then
+
+!$OMP PARALLEL DEFAULT(SHARED)                                         &
+!$OMP          FIRSTPRIVATE(j)                                         &
+!$OMP          PRIVATE(i)
+
+
+!     Here begins dimensional split advection for u-velocity
+
+!$OMP SINGLE
+!     KK-TODO: _POINTER_REMAP_, but this requires that D[U|V] become
+!              pointers like mask_[u|v]flux in do_advection and similar
+!              for h[u|v] in do_advection_3d and in uv_advect_3d
+!#ifdef _POINTER_REMAP_
+!      pDUadv(imin-HALO-1:,jmin-HALO:) => Dvel
+!#else
+      pDUadv => DUadv
+      pDUadv(_IRANGE_HALO_-1,:) = Dvel(1+_IRANGE_HALO_,:)
+!#endif
+      pDVadv => DVadv
+!$OMP END SINGLE
+
+!$OMP DO SCHEDULE(RUNTIME)
+#ifndef SLICE_MODEL
+      do j=jmin-HALO,jmax+HALO
+#endif
+         do i=imin-HALO,imax+HALO-1
+!           the velocity to be transported
+            fadv(i,j) = velu(i,j)
+            if (vel2d_adv_hor .ne. J7) then
+!              Note (KK): Uadv defined on T-points (future U-points)
+!                         Vadv defined on X-points (future V-points)
+               Uadv(i,j) = _HALF_*( U(i,j) + U(i+1,j) )
+               Vadv(i,j) = _HALF_*( V(i,j) + V(i+1,j) )
+            end if
+!           Note (KK): DV only valid until jmax+1
+!                      therefore pDVadv only valid until jmax+1
+            pDVadv(i,j) = _HALF_*( DV(i,j) + DV(i+1,j) )
+         end do
+#ifndef SLICE_MODEL
+      end do
+#endif
+!$OMP END DO NOWAIT
+
+      if (vel2d_adv_hor .eq. J7) then
+!$OMP DO SCHEDULE(RUNTIME)
+#ifndef SLICE_MODEL
+         do j=jmin-HALO,jmax+HALO
+#endif
+            do i=imin-HALO,imax+HALO-1
+!              Note (KK): [U|V]adv defined on T-points (future U-points)
+!                         Dadv defined on X-points (future V-points)
+!                         note that Dadv is shifted to j+1 !!!
+               Uadv(i,j) = _HALF_*( U(i,j)*DYU + U(i+1,j)*DYUIP1 )
+               if (j .ne. jmin-HALO) then
+                  if (az(i+1,j) .eq. 1) then
+                     Vadv(i,j) = _HALF_*( V(i+1,j-1)*DXVPM + V(i+1,j)*DXVIP1 )
+                  else if(az(i+1,j) .eq. 2) then
+!                    Note (KK): can be included into case above, when
+!                               V is properly mirrored across n/s open bdys
+                     if (av(i+1,j) .eq. 2) then ! southern open bdy
+                        Vadv(i,j) = V(i+1,j)*_HALF_*( DXVPM + DXVIP1 )
+                     else if (av(i+1,j-1) .eq. 2) then ! northern open bdy
+                        Vadv(i,j) = V(i+1,j-1)*_HALF_*( DXVPM + DXVIP1 )
+                     end if
+                  end if
+                  if (ax(i,j) .eq. 0) then
+                     if (au(i,j-1) .ne. 0) then
+                        Dadv(i,j) = DU(i,j-1)
+                     else if (au(i,j) .ne. 0) then
+                        Dadv(i,j) = DU(i,j)
+                     end if
+                  else
+                     Dadv(i,j) = _HALF_*( DU(i,j-1) + DU(i,j) )
+                  end if
+               end if
+            end do
+#ifndef SLICE_MODEL
+         end do
+#endif
+!$OMP END DO
+
+#ifdef SLICE_MODEL
+!$OMP SINGLE
+         Dadv(imin-HALO:imax+HALO-1,j+1) = Dadv(imin-HALO:imax+HALO-1,j)
+         Uadv(imin-HALO:imax+HALO-1,j+1) = Uadv(imin-HALO:imax+HALO-1,j)
+         Vadv(imin-HALO:imax+HALO-1,j+1) = Vadv(imin-HALO:imax+HALO-1,j)
+!$OMP END SINGLE
+#endif
+
+#ifndef SLICE_MODEL
+!        OMP-NOTE (KK): j loop must not be changed and cannot be threaded!
+         do j=jmin-HALO,jmax+HALO-1
+#endif
+!$OMP DO SCHEDULE(RUNTIME)
+            do i=imin-HALO,imax+HALO-1
+!              Note (KK): [U|V]adv defined on V-points (future X-points)
+!                         no change of Uadv for northern closed bdy
+!                         Dadv defined on U-points (future T-points)
+!                         note that Dadv is not shifted anymore !
+!              KK-TODO: Vadv for western/eastern open bdys ?
+               if (az(i+1,j) .eq. 0) then ! southern closed bdy
+                  Uadv(i,j) = Uadv(i,j+1)
+               else if (az(i+1,j+1) .ne. 0) then
+                  Uadv(i,j) = _HALF_*( Uadv(i,j) + Uadv(i,j+1) )
+                  Vadv(i,j) = _HALF_*( Vadv(i,j) + Vadv(i,j+1) )
+               end if
+               Dadv(i,j) = _HALF_*( Dadv(i,j) + Dadv(i,j+1) )
+            end do
+!$OMP END DO
+#ifndef SLICE_MODEL
+         end do
+#endif
+
+!$OMP SINGLE
+         pDadv => Dadv
+!$OMP END SINGLE
+
+      else
+
+!$OMP SINGLE
+         pDadv => DU
+!$OMP END SINGLE
+
+      end if
+
+!$OMP SINGLE
+      if (vel2d_adv_hor.ne.UPSTREAM .and. vel2d_adv_hor.ne.J7) then
+!        we need to update fadv(imax+HALO,jmin-HALO:jmax+HALO)
+         call tic(TIM_UVADVH)
+         call update_2d_halo(fadv,fadv,au,imin,jmin,imax,jmax,U_TAG)
+         call wait_halo(U_TAG)
+         call toc(TIM_UVADVH)
+      end if
+
+      call do_advection(dtm,fadv,Uadv,Vadv,pDUadv,pDVadv,pDadv,pDadv, &
+                        vel2d_adv_split,vel2d_adv_hor,_ZERO_,U_TAG,   &
+                        advres=UEx,nvd=p_nvd)
+!$OMP END SINGLE
+
+      if (calc_numdis) then
+
+!$OMP DO SCHEDULE(RUNTIME)
+#ifndef SLICE_MODEL
+         do j=jmin,jmax
+#endif
+            do i=imin,imax
+               if (adv_gridU%mask_finalise(i,j)) then
+                  nvd(i,j) = _HALF_*nvd(i,j)/ARUD1
+               end if
+            end do
+#ifndef SLICE_MODEL
+         end do
+#endif
+!$OMP END DO
+
+!$OMP SINGLE
+         call update_2d_halo(nvd,nvd,au,imin,jmin,imax,jmax,U_TAG)
+         call wait_halo(U_TAG)
+!$OMP END SINGLE
+
+!$OMP DO SCHEDULE(RUNTIME)
+#ifndef SLICE_MODEL
+         do j=jmin,jmax
+#endif
+            do i=imin,imax
+               if (az(i,j) .eq. 1) then
+                  numdis(i,j) = _HALF_*( nvd(i-1,j) + nvd(i,j) )*ARCD1
+               end if
+            end do
+#ifndef SLICE_MODEL
+         end do
+#endif
+!$OMP END DO
+
+      end if
+
+
+!     Here begins dimensional split advection for v-velocity
+
+!$OMP SINGLE
+!     KK-TODO: _POINTER_REMAP_, but this requires that D[U|V] become
+!              pointers like mask_[u|v]flux in do_advection and similar
+!              for h[u|v] in do_advection_3d and in uv_advect_3d
+      pDUadv => DUadv
+!#ifdef _POINTER_REMAP_
+!      pDVadv(imin-HALO:,jmin-HALO:) => Dvel(_IRANGE_HALO_,1+_JRANGE_HALO_) ! contiguous but smaller
+!      pDVadv(imin-HALO:,jmin-HALO-1:) => Dvel ! contiguous but also provides jmin-HALO-1
+!#else
+      pDVadv => DVadv
+      pDVadv(:,_JRANGE_HALO_-1) = Dvel(:,1+_JRANGE_HALO_)
+!#endif
+!$OMP END SINGLE
+
+!$OMP DO SCHEDULE(RUNTIME)
+#ifndef SLICE_MODEL
+     do j=jmin-HALO,jmax+HALO-1
+#endif
+         do i=imin-HALO,imax+HALO
+!           the velocity to be transported
+            fadv(i,j) = velv(i,j)
+            if (vel2d_adv_hor .ne. J7) then
+!              Note (KK): Uadv defined on X-points (future U-points)
+!                         Vadv defined on T-points (future V-points)
+               Uadv(i,j) = _HALF_*( U(i,j) + U(i,j+1) )
+               Vadv(i,j) = _HALF_*( V(i,j) + V(i,j+1) )
+            end if
+!           Note (KK): DU only valid until imax+1
+!                      therefore pDUadv only valid until imax+1
+            pDUadv(i,j) = _HALF_*( DU(i,j) + DU(i,j+1) )
+         end do
+#ifndef SLICE_MODEL
+      end do
+#endif
+!$OMP END DO NOWAIT
+
+      if (vel2d_adv_hor .eq. J7) then
+!$OMP DO SCHEDULE(RUNTIME)
+#ifndef SLICE_MODEL
+         do j=jmin-HALO,jmax+HALO-1
+#endif
+            do i=imin-HALO,imax+HALO
+!              Note (KK): [U|V]adv defined on T-points (future V-points)
+!                         Dadv defined on X-points (future U-points)
+!                         note that Dadv is shifted to i+1 !!!
+               if (i .ne. imin-HALO) then
+                  if (az(i,j+1) .eq. 1) then
+                     Uadv(i,j) = _HALF_*( U(i-1,j+1)*DYUMP + U(i,j+1)*DYUJP1 )
+                  else if(az(i,j+1) .eq. 2) then
+!                    Note (KK): can be included into case above, when
+!                               U is properly mirrored across w/e open bdys
+                     if (au(i,j+1) .eq. 2) then ! western open bdy
+                        Uadv(i,j) = U(i,j+1)*_HALF_*( DYUMP + DYUJP1 )
+                     else if (au(i-1,j+1) .eq. 2) then ! eastern open bdy
+                        Uadv(i,j) = U(i-1,j+1)*_HALF_*( DYUMP + DYUJP1 )
+                     end if
+                  end if
+                  if (ax(i,j) .eq. 0) then
+                     if (av(i-1,j) .ne. 0) then
+                        Dadv(i,j) = DV(i-1,j)
+                     else if (av(i,j) .ne. 0) then
+                        Dadv(i,j) = DV(i,j)
+                     end if
+                  else
+                     Dadv(i,j) = _HALF_*( DV(i-1,j) + DV(i,j) )
+                  end if
+               end if
+               Vadv(i,j) = _HALF_*( V(i,j)*DXV + V(i,j+1)*DXVJP1 )
+            end do
+#ifdef SLICE_MODEL
+!$OMP END DO
+#endif
+
+!           OMP-NOTE (KK): i loop must not be changed and cannot be threaded!
+            do i=imin-HALO,imax+HALO-1
+!              Note (KK): [U|V]adv defined on U-points (future X-points)
+!                         no change of Vadv for eastern closed bdy
+!                         Dadv defined on V-points (future T-points)
+!                         note that Dadv is not shifted anymore !
+!              KK-TODO: Uadv for northern/southern open bdys ?
+               if (az(i,j+1) .eq. 0) then ! western closed bdy
+                  Vadv(i,j) = Vadv(i+1,j)
+               else if (az(i+1,j+1) .ne. 0) then
+                  Uadv(i,j) = _HALF_*( Uadv(i,j) + Uadv(i+1,j) )
+                  Vadv(i,j) = _HALF_*( Vadv(i,j) + Vadv(i+1,j) )
+               end if
+               Dadv(i,j) = _HALF_*( Dadv(i,j) + Dadv(i+1,j) )
+            end do
+#ifndef SLICE_MODEL
+         end do
+!$OMP END DO
+#endif
+
+!$OMP SINGLE
+         pDadv => Dadv
+!$OMP END SINGLE
+
+      else
+
+!$OMP SINGLE
+         pDadv => DV
+!$OMP END SINGLE
+
+      end if
+
+!$OMP SINGLE
+      if (vel2d_adv_hor.ne.UPSTREAM .and. vel2d_adv_hor.ne.J7) then
+!        we need to update fadv(imin-HALO:imax+HALO,jmax+HALO)
+         call tic(TIM_UVADVH)
+         call update_2d_halo(fadv,fadv,av,imin,jmin,imax,jmax,V_TAG)
+         call wait_halo(V_TAG)
+         call toc(TIM_UVADVH)
+      end if
+
+      call do_advection(dtm,fadv,Uadv,Vadv,pDUadv,pDVadv,pDadv,pDadv, &
+                        vel2d_adv_split,vel2d_adv_hor,_ZERO_,V_TAG,   &
+                        advres=VEx,nvd=p_nvd)
+!$OMP END SINGLE
+
+      if (calc_numdis) then
+
+!$OMP DO SCHEDULE(RUNTIME)
+#ifndef SLICE_MODEL
+         do j=jmin,jmax
+#endif
+            do i=imin,imax
+               if (adv_gridV%mask_finalise(i,j)) then
+                  nvd(i,j) = _HALF_*nvd(i,j)/ARVD1
+               end if
+            end do
+#ifndef SLICE_MODEL
+         end do
+#endif
+!$OMP END DO
+
+!$OMP SINGLE
+         call update_2d_halo(nvd,nvd,av,imin,jmin,imax,jmax,V_TAG)
+         call wait_halo(V_TAG)
+!$OMP END SINGLE
+
+!$OMP DO SCHEDULE(RUNTIME)
+#ifndef SLICE_MODEL
+         do j=jmin,jmax
+#endif
+            do i=imin,imax
+               if (az(i,j) .eq. 1) then
+                  numdis(i,j) = numdis(i,j)                                      &
+                               +_HALF_*( nvd(i,j-1) + nvd(i,j) )*ARCD1
+               end if
+            end do
+#ifndef SLICE_MODEL
+         end do
+#endif
+!$OMP END DO
+
+      end if
+
+
+!$OMP END PARALLEL
+
+   else ! if (vel2d_adv_hor .eq. NOADV)
+
+      UEx = _ZERO_ ; VEx = _ZERO_
+
+   end if
+
+   call toc(TIM_UVADV)
+#ifdef DEBUG
+   write(debug,*) 'Leaving uv_advect()'
+   write(debug,*)
+#endif
+   return
+   end subroutine uv_advect
+!EOC
+!-----------------------------------------------------------------------
+! Copyright (C) 2001 - Hans Burchard and Karsten Bolding               !
+!-----------------------------------------------------------------------

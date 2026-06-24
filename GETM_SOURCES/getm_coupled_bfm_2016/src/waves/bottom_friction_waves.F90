@@ -1,0 +1,218 @@
+#include "cppdefs.h"
+!-----------------------------------------------------------------------
+!BOP
+!
+! !ROUTINE: bottom_friction_waves - calculates the 2D bottom friction.
+!
+! !INTERFACE:
+   subroutine bottom_friction_waves(velu,velv,DU,DV,Dvel,vel_U,vel_V,ru,rv,zub,zvb,taubmax)
+!
+! !DESCRIPTION:
+!
+! !USES:
+   use parameters, only: kappa
+   use domain, only: imin,imax,jmin,jmax,az
+   use domain, only: z0
+   use variables_waves, only: waveH,waveT,waveK,coswavedir,sinwavedir
+   use waves, only: waves_bbl_method,NO_WBBL,WBBL_DATA2,WBBL_SOULSBY05
+   use waves, only: wbbl_tauw,wbbl_rdrag
+   use getm_timers, only: tic,toc,TIM_WAVES
+!$ use omp_lib
+   IMPLICIT NONE
+!
+! !INPUT VARIABLES:
+   REALTYPE,dimension(E2DFIELD),intent(in)    :: velu,velv,DU,DV,Dvel,vel_U,vel_V
+!
+! !INPUT/OUTPUT VARIABLES:
+   REALTYPE,dimension(E2DFIELD),intent(inout) :: ru,rv,zub,zvb
+   REALTYPE,dimension(:,:),pointer,intent(in),optional :: taubmax
+!
+! !OUTPUT VARIABLES:
+!
+! !REVISION HISTORY:
+!  Original author(s): Ulf Gräwe
+!                      Saeed Moghimi
+!                      Knut Klingbeil
+!
+!  !LOCAL VARIABLES:
+   REALTYPE,dimension(E2DFIELD)             :: taubw,wbbl,taubmu,taubmv
+   REALTYPE                                 :: tauw,wbl,taubmx,taubmy,taubm
+   REALTYPE                                 :: cdm1,cosangle
+   REALTYPE                                 :: ttransx,ttransy,ttrans
+   REALTYPE                                 :: tauc,taubc,taube,taubp
+   integer                                  :: i,j
+   logical                                  :: calc_taubmax
+
+!EOP
+!-----------------------------------------------------------------------
+!BOC
+#ifdef DEBUG
+   integer, save :: Ncall = 0
+   Ncall = Ncall+1
+   write(debug,*) 'bottom_friction_waves() # ',Ncall
+#endif
+#ifdef SLICE_MODEL
+   j = jmax/2 ! this MUST NOT be changed!!!
+#endif
+
+   if (waves_bbl_method .eq. NO_WBBL) return
+
+   call tic(TIM_WAVES)
+
+   calc_taubmax = .false.
+   if (present(taubmax)) then
+      calc_taubmax = associated(taubmax)
+   end if
+
+!$OMP PARALLEL DEFAULT(SHARED)                                         &
+!$OMP          FIRSTPRIVATE(j)                                         &
+!$OMP          PRIVATE(i,tauwwbl,cdm1,cosangle,ttransx,ttransy,ttrans) &
+!$OMP          PRIVATE(tauc,tauw,taubmx,taubmy,taubm,taubc,taube,taubp)
+
+!$OMP DO SCHEDULE(RUNTIME)
+#ifndef SLICE_MODEL
+   do j=jmin-HALO,jmax+HALO
+#endif
+      do i=imin-HALO,imax+HALO
+         if (az(i,j) .ne. 0) then
+            taubw(i,j) = wbbl_tauw(waveT(i,j),waveH(i,j),waveK(i,j), &
+                                   Dvel(i,j),z0(i,j),wbbl(i,j))
+         end if
+      end do
+#ifndef SLICE_MODEL
+   end do
+#endif
+!$OMP END DO
+
+#ifdef SLICE_MODEL
+!$OMP SINGLE
+   taubw(:,j+1) = taubw(:,j)
+   wbbl (:,j+1) = wbbl (:,j)
+!$OMP END SINGLE
+#endif
+
+!  The x-direction
+
+!$OMP DO SCHEDULE(RUNTIME)
+#ifndef SLICE_MODEL
+   do j=jmin-HALO+1,jmax+HALO-1
+#endif
+      do i=imin-HALO,imax+HALO-1
+!        vel_U must be zero at land!!!
+         if (vel_U(i,j) .gt. _ZERO_) then
+            tauc = ru(i,j) * vel_U(i,j)
+            tauw = _HALF_ * ( taubw(i,j) + taubw(i+1,j) )
+            wbl = _HALF_ * ( wbbl(i,j) + wbbl(i+1,j) )
+            ru(i,j) = wbbl_rdrag(tauc,tauw,ru(i,j),vel_U(i,j),DU(i,j),wbl,zub(i,j))
+            cdm1 = vel_U(i,j) / ru(i,j)
+            zub(i,j) = _HALF_*DU(i,j) / (exp(kappa*sqrt(cdm1)) - _ONE_)
+         end if
+      end do
+#ifndef SLICE_MODEL
+   end do
+#endif
+!$OMP END DO
+
+
+!  The y-direction
+
+!$OMP DO SCHEDULE(RUNTIME)
+#ifndef SLICE_MODEL
+   do j=jmin-HALO,jmax+HALO-1
+#endif
+      do i=imin-HALO+1,imax+HALO-1
+!        vel_V must be zero at land!!!
+         if (vel_V(i,j) .gt. _ZERO_) then
+            tauc = rv(i,j) * vel_V(i,j)
+            tauw = _HALF_ * ( taubw(i,j) + taubw(i,j+1) )
+            wbl = _HALF_ * ( wbbl(i,j) + wbbl(i,j+1) )
+            rv(i,j) = wbbl_rdrag(tauc,tauw,rv(i,j),vel_V(i,j),DV(i,j),wbl,zvb(i,j))
+            cdm1 = vel_V(i,j) / rv(i,j)
+            zvb(i,j) = _HALF_*DV(i,j) / (exp(kappa*sqrt(cdm1)) - _ONE_)
+         end if
+      end do
+#ifndef SLICE_MODEL
+   end do
+#endif
+!$OMP END DO
+
+#ifdef SLICE_MODEL
+!$OMP SINGLE
+   ru (imin-HALO  :imax+HALO-1,j+1) = ru (imin-HALO  :imax+HALO-1,j)
+   rv (imin-HALO+1:imax+HALO-1,j-1) = rv (imin-HALO+1:imax+HALO-1,j)
+   rv (imin-HALO+1:imax+HALO-1,j+1) = rv (imin-HALO+1:imax+HALO-1,j)
+   zub(imin-HALO  :imax+HALO-1,j+1) = zub(imin-HALO  :imax+HALO-1,j)
+   zvb(imin-HALO+1:imax+HALO-1,j-1) = zvb(imin-HALO+1:imax+HALO-1,j)
+   zvb(imin-HALO+1:imax+HALO-1,j+1) = zvb(imin-HALO+1:imax+HALO-1,j)
+!$OMP END SINGLE
+#endif
+
+
+   if (calc_taubmax) then
+
+!$OMP WORKSHARE
+!     velocities must be zero at land!!!
+      taubmu = ru * velu
+      taubmv = rv * velv
+!$OMP END WORKSHARE
+
+!$OMP DO SCHEDULE(RUNTIME)
+#ifndef SLICE_MODEL
+      do j=jmin-HALO+1,jmax+HALO-1
+#endif
+         do i=imin-HALO+1,imax+HALO-1
+            if (az(i,j) .ne. 0) then
+               taubmx = _HALF_ * ( taubmu(i-1,j  ) + taubmu(i,j) )
+               taubmy = _HALF_ * ( taubmv(i  ,j-1) + taubmv(i,j) )
+               taubm = sqrt( taubmx*taubmx + taubmy*taubmy )
+
+               select case(waves_bbl_method)
+                  case (WBBL_DATA2)
+                     taubp = taubw(i,j)
+                  case (WBBL_SOULSBY05)
+                     taubc = taubmax(i,j) ! taubmax set by currents
+                     taube = sqrt( taubc*taubc + taubw(i,j)*taubw(i,j) )
+                     taubp = sqrt( taube * taubw(i,j) )
+               end select
+
+!              we need the cosine of the angle between waves and currents
+               ttransx = velu(i-1,j) + velu(i,j)
+               ttransy = velv(i,j-1) + velv(i,j)
+               ttrans  = sqrt( ttransx*ttransx + ttransy*ttransy )
+               if (ttrans .gt. _ZERO_) then
+                  cosangle = (coswavedir(i,j)*ttransx + sinwavedir(i,j)*ttransy ) / ttrans
+               else
+                  cosangle = _ZERO_
+               end if
+
+               taubmax(i,j) = sqrt( taubm*taubm + taubp*taubp + _TWO_*taubm*taubp*cosangle )
+            end if
+         end do
+#ifndef SLICE_MODEL
+      end do
+#endif
+!$OMP END DO
+
+#ifdef SLICE_MODEL
+!$OMP SINGLE
+      taubmax(imin-HALO+1:imax+HALO-1,j+1) = taubmax(imin-HALO+1:imax+HALO-1,j)
+!$OMP END SINGLE
+#endif
+
+   end if
+
+
+!$OMP END PARALLEL
+
+   call toc(TIM_WAVES)
+
+#ifdef DEBUG
+   write(debug,*) 'Leaving bottom_friction_waves()'
+   write(debug,*)
+#endif
+   return
+   end subroutine bottom_friction_waves
+!EOC
+!-----------------------------------------------------------------------
+! Copyright (C) 2014 - Hans Burchard and Karsten Bolding               !
+!-----------------------------------------------------------------------

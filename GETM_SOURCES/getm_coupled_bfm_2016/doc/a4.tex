@@ -1,0 +1,157 @@
+\documentclass[a4paper,twoside]{article}
+
+% AMS math and symbols
+\usepackage{amsmath,amsfonts,amssymb,amsbsy,latexsym}
+
+% natural science bibliography
+\usepackage[round]{natbib}
+
+% definitions used in the GETM-manual
+\input definitions.tex
+
+% graphics
+\usepackage[dvips]{graphicx}
+\usepackage{psfrag}
+\usepackage{epic}
+\usepackage{supertabular}
+
+% to make pdf files look OK
+\usepackage{ae}
+
+% center it on a4-format
+\setlength{\evensidemargin}{4.6mm}
+\setlength{\oddsidemargin}{4.6mm}
+\setlength{\textwidth}{150mm}
+
+\begin{document}
+
+
+
+% the titlepage
+\begin{titlepage}
+
+\vfill
+
+{\sf \bf \huge
+ \begin{center}
+   General Estuarine Transport Model
+ \end{center}
+}
+\begin{center}
+\includegraphics[width=\linewidth]{./figures/GETM2.ps}
+\end{center}
+
+\vspace{6mm}
+
+{\sf \bf \LARGE
+ \begin{center}
+   Source Code and Test Case \\ Documentation
+ \end{center}
+}
+
+{\sf \bf \LARGE
+ \begin{center}
+Hans Burchard$^{1}$, Karsten Bolding$^2$\\ and Lars Umlauf$^1$   
+ \end{center}
+}
+
+
+\vspace{6mm}
+
+{\sf \bf \Large
+ \begin{center}
+ 1: Baltic Sea Research Institute Warnem\"unde, Germany \\
+ 2: Bolding \& Bruggeman ApS, Asperup, Denmark \\
+ \end{center}
+}
+
+
+\vspace{5mm}
+
+{\sf \bf \Large
+ \begin{center}
+  Version pre\_2.6.x (based on v2.5.x code)
+ \end{center}
+}
+
+\vfill
+
+
+{\sf \bf \Large
+ \begin{center}
+\today
+ \end{center}
+}
+
+\vfill
+
+\end{titlepage}
+
+
+% table of contents
+\cleardoublepage
+\tableofcontents
+
+% include the section files
+% the introduction. All files
+% ending with 'Intro.tex' are hand-made,
+% all others come from 'ProTeX'
+
+\cleardoublepage
+%
+\include{whatsnew}
+
+\cleardoublepage
+
+\include{introduction}
+
+\cleardoublepage
+\include{getm_physics}
+
+%\cleardoublepage
+%\include{getmIntro}
+%\include{getm}
+
+\cleardoublepage
+\include{domainIntro}
+\include{domain}
+
+\cleardoublepage
+\include{2dIntro}
+\include{2d}
+
+\cleardoublepage
+\include{3dIntro}
+\include{3d}
+
+%\cleardoublepage
+%\include{meteoIntro}
+%\include{meteo}
+
+%%\cleardoublepage
+%\include{inputIntro}
+%\include{input}
+
+%\cleardoublepage
+%\include{outputIntro}
+%\include{output}
+
+\cleardoublepage
+\include{ncdfIntro}
+\include{ncdf}
+
+%\cleardoublepage
+%\include{futilsIntro}
+%\include{futils}
+
+%\cleardoublepage
+%\include{cases}
+
+% Bibliography with BibTeX:
+\cleardoublepage
+\bibliographystyle{agu}
+\addcontentsline{toc}{section}{Bibliography}
+\bibliography{getm}
+
+
+\end{document}
