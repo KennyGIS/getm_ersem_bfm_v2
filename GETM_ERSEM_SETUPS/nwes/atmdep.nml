@@ -1,0 +1,12 @@
+&atmdep_nml
+  use_atmdep = .true.
+  atmdep_file = 'atmdep_n.nc'
+  n_atmdep_fields = 2
+  atmdep_flux_vars = 'dep_noy_total', 'dep_nhx_total'
+  atmdep_target_vars = 'N3n', 'N4n'
+  atmdep_var_noy_total = 'dep_noy_total'
+  atmdep_var_nhx_total = 'dep_nhx_total'
+  atmdep_on_grid = .true.
+  atmdep_lon_name = 'lon'
+  atmdep_lat_name = 'lat'
+/

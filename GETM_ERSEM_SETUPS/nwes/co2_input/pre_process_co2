@@ -1,0 +1,47 @@
+#!/bin/bash
+
+# Input and output paths
+INPUT="co2_mm_mlo.txt"
+OUTPUT="co2_monthly_bfm.dat"
+
+# Check input exists
+if [ ! -f "$INPUT" ]; then
+    echo "ERROR: Input file not found: $INPUT"
+    exit 1
+fi
+
+echo "Processing $INPUT ..."
+echo "Writing $OUTPUT ..."
+
+# Write header
+echo "# Preprocessed Mauna Loa CO2 data for BFM" > "$OUTPUT"
+echo "# Columns: year month monthly_avg_ppm" >> "$OUTPUT"
+
+# Process file
+awk '
+BEGIN { count=0 }
+
+# Skip comments
+/^#/ { next }
+
+# Skip empty lines
+NF < 4 { next }
+
+{
+    year = $1
+    month = $2
+    co2 = $4
+
+    # Basic sanity check on month
+    if (month >= 1 && month <= 12) {
+        printf "%4d %02d %8.2f\n", year, month, co2
+        count++
+    }
+}
+
+END {
+    print "Wrote " count " rows." > "/dev/stderr"
+}
+' "$INPUT" >> "$OUTPUT"
+
+echo "Done."

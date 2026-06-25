@@ -1,0 +1,110 @@
+#!/bin/sh
+set -eu
+
+###############################################################################
+# USER INPUT (EDIT THIS ONLY)
+###############################################################################
+
+# Space-separated list of configurations to build
+CONFIGURATIONS="${CONFIGURATIONS:-20x16}"
+#CONFIGURATIONS="${CONFIGURATIONS:-32x32}"
+#CONFIGURATIONS="${CONFIGURATIONS:-42x42}"
+
+# Root paths for the configured GETM build and installed executable
+#Version root will work if this if being run after running ./setup_base_model.sh
+
+#TOOLS_ROOT="${VERSION_ROOT}/tools"
+#LOCAL_ROOT="${VERSION_ROOT}/local"
+
+VERSION_ROOT="${VERSION_ROOT:-${HOME}/version_2}"
+TOOLS_ROOT="${TOOLS_ROOT:-${VERSION_ROOT}/tools}"
+LOCAL_ROOT="${LOCAL_ROOT:-${VERSION_ROOT}/local}"
+
+# Executable naming
+EXECUTABLE_PREFIX="${EXECUTABLE_PREFIX:-getm_prod}"
+
+# Compiler selection expected from wrapper, but define a fallback here too
+FORTRAN_COMPILER="${FORTRAN_COMPILER:-GFORTRAN}"
+
+###############################################################################
+# SETUP
+###############################################################################
+
+echo "$FORTRAN_COMPILER"
+echo "${COMPILATION_MODE:-}"
+
+export GFORTRAN_UNBUFFERED_ALL=y
+export GFORTRAN_UNBUFFERED_PRECONNECTED=y
+
+if [ "$FORTRAN_COMPILER" = "GFORTRAN" ] ; then
+  compiler='gfortran'
+elif [ "$FORTRAN_COMPILER" = "IFORT" ] ; then
+  compiler='ifort'
+else
+  echo "ERROR: Unsupported FORTRAN_COMPILER: $FORTRAN_COMPILER"
+  exit 1
+fi
+
+setupdir=$(pwd)
+setup=$(basename "$setupdir")
+
+echo
+echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+echo "!"
+echo "! Have you configured CMAKE for this branch?"
+echo "!"
+echo "! If not do the equivalent of:"
+  echo "! cd $TOOLS_ROOT/getm/build/$compiler"
+echo "! ./getm_configure.sh"
+echo "! cd $setupdir"
+echo "!"
+echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+echo
+sleep 1
+
+###############################################################################
+# BUILD LOOP
+###############################################################################
+
+for conf in $CONFIGURATIONS ; do
+
+  dimfile="$setupdir/Configurations/$conf/$setup.dim"
+  builddir="$TOOLS_ROOT/getm/build/$compiler"
+  installdir="$LOCAL_ROOT/getm/$compiler/bin"
+  targetbin="$setupdir/bin/${EXECUTABLE_PREFIX}_${FORTRAN_COMPILER}.${conf}"
+
+  echo "Using configuration: $conf"
+  echo "Using dimension file: $dimfile"
+  echo "Using build directory: $builddir"
+  echo "Using install directory: $installdir"
+
+  if [ ! -f "$dimfile" ]; then
+    echo "ERROR: Missing dimension file: $dimfile"
+    exit 1
+  fi
+
+  if [ ! -d "$builddir" ]; then
+    echo "ERROR: Missing build directory: $builddir"
+    exit 1
+  fi
+
+  if [ ! -d "$setupdir/bin" ]; then
+    mkdir -p "$setupdir/bin"
+  fi
+
+  ln -sf "$dimfile" "$builddir/dimensions.h"
+
+  cd "$builddir" || exit 1
+  make install || exit 1
+
+  cd "$setupdir" || exit 1
+
+  if [ ! -f "$installdir/getm" ]; then
+    echo "ERROR: Compiled executable not found: $installdir/getm"
+    exit 1
+  fi
+
+  cp "$installdir/getm" "$targetbin"
+  echo "Copied executable to: $targetbin"
+
+done

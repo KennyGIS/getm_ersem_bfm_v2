@@ -1,0 +1,6 @@
+! specifies the dimensions for static compilation of cross_shelf_fine
+   integer, parameter :: iextr=383,jextr=334
+   integer, parameter :: imin=1,imax=20,jmin=1,jmax=16
+   integer, parameter :: iimin=1,iimax=imax,jjmin=1,jjmax=jmax
+   integer, parameter :: kmax=25
+

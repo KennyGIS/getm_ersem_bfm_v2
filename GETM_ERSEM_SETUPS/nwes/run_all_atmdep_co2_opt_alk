@@ -1,0 +1,699 @@
+#!/bin/sh
+
+#SBATCH --partition=normal --qos=normal
+#SBATCH --nodes=8
+#SBATCH --mem-bind="local"
+#SBATCH --exclusive
+#SBATCH --time=11-1:00:00
+#SBATCH --output=/export/lv9/user/klarsen/version_2/home/GETM_ERSEM_SETUPS/nwes/run_all.stdout
+#SBATCH --job-name="run_all_atmdep"
+
+###############################################################################
+# 1. INPUT / DESCRIPTION / VARIABLE DEFINITION
+###############################################################################
+
+VERSION_ROOT="${VERSION_ROOT:-$HOME/version_2}"
+DOMAIN_NAME="nwes"
+DOMAIN_DIR="$VERSION_ROOT/home/GETM_ERSEM_SETUPS/$DOMAIN_NAME"
+
+FORTRAN_COMPILER="${FORTRAN_COMPILER:-GFORTRAN}"
+MPI="${MPI:-OPENMPI}"
+export FORTRAN_COMPILER
+export MPI
+
+GETMDIR_WRAPPER="$VERSION_ROOT/home/getm-git"
+RUNID="$DOMAIN_NAME"
+
+CONF="20x16"
+NPROCESSES="318"
+
+DIR_BDY2D="/export/lv1/user/jvandermolen/home/GETM_ERSEM_SETUPS/north_west_european_shelf"
+
+YEAR_START=2013
+YEAR_STOP=2014
+
+MONTHS="10"
+#MONTHS="01 02 03 04 05 06 07 08 09 10 11 12"
+DAYS="01"
+BEGIN_MONTH="10"
+
+TIME_STEP="10"
+STEP_2D="8640"
+STEP_3D="8640"
+
+RUN_TYPE="4"
+
+BASE_1=0
+BASE_2=0
+BASE_3=0
+
+POSTPROCESS=1
+POSTPROCESS_DIR="/export/lv9/user/klarsen/version_2/model_out/Optimized_postprocessing"
+POSTPROCESS_SCRIPT="$POSTPROCESS_DIR/postprocess_month.sbatch"
+POSTPROCESS_ROOT="/export/lv9/user/klarsen/version_2/model_out/codeblue_alkrunup"
+POSTPROCESS_SCRATCH="$POSTPROCESS_DIR/post_processing_tmp"
+POSTPROCESS_LOG_DIR="$POSTPROCESS_DIR/log"
+POSTPROCESS_LAST_JOB_FILE="$DOMAIN_DIR/.last_postprocess_jobid"
+POSTPROCESS_PYTHON="/export/lv9/user/klarsen/.conda/envs/codeblue/bin/python"
+POSTPROCESS_CONFIG="$POSTPROCESS_DIR/postprocess_outputs.inp"
+
+export POSTPROCESS
+export POSTPROCESS_DIR
+export POSTPROCESS_SCRIPT
+export POSTPROCESS_ROOT
+export POSTPROCESS_SCRATCH
+export POSTPROCESS_LOG_DIR
+export POSTPROCESS_LAST_JOB_FILE
+export POSTPROCESS_PYTHON
+export
+
+prepare_postprocess_startup() {
+  postprocess_run_tag="${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}"
+
+  if [ -z "${POSTPROCESS_DIR:-}" ]; then
+    echo "ERROR: POSTPROCESS_DIR is unset"
+    exit 1
+  fi
+
+  if [ -z "${POSTPROCESS_SCRIPT:-}" ]; then
+    POSTPROCESS_SCRIPT="$POSTPROCESS_DIR/postprocess_month.sbatch"
+    export POSTPROCESS_SCRIPT
+    echo "WARNING: POSTPROCESS_SCRIPT was unset; using $POSTPROCESS_SCRIPT"
+  fi
+
+  if [ -z "${POSTPROCESS_SCRATCH:-}" ]; then
+    POSTPROCESS_SCRATCH="$POSTPROCESS_DIR/post_processing_tmp"
+    export POSTPROCESS_SCRATCH
+    echo "WARNING: POSTPROCESS_SCRATCH was unset; using $POSTPROCESS_SCRATCH"
+  fi
+
+  if [ -z "${POSTPROCESS_LOG_DIR:-}" ]; then
+    POSTPROCESS_LOG_DIR="$POSTPROCESS_DIR/log"
+    export POSTPROCESS_LOG_DIR
+    echo "WARNING: POSTPROCESS_LOG_DIR was unset; using $POSTPROCESS_LOG_DIR"
+  fi
+
+  if [ ! -f "$POSTPROCESS_SCRIPT" ]; then
+    echo "ERROR: POSTPROCESS_SCRIPT not found: $POSTPROCESS_SCRIPT"
+    exit 1
+  fi
+
+  postprocess_sbatch_log_dir="$POSTPROCESS_LOG_DIR"
+  postprocess_stdout_spec=$(awk '
+    /^#SBATCH[[:space:]]+--output=/ {
+      sub(/^#SBATCH[[:space:]]+--output=/, "")
+      gsub(/^"|"$/, "")
+      print
+      exit
+    }
+    /^#SBATCH[[:space:]]+--output[[:space:]]+/ {
+      print $3
+      exit
+    }
+    /^#SBATCH[[:space:]]+-o[[:space:]]+/ {
+      print $3
+      exit
+    }
+  ' "$POSTPROCESS_SCRIPT")
+
+  if [ -n "$postprocess_stdout_spec" ]; then
+    postprocess_stdout_dir=$(dirname "$postprocess_stdout_spec")
+    case "$postprocess_stdout_dir" in
+      .) postprocess_sbatch_log_dir=$(pwd) ;;
+      /*) postprocess_sbatch_log_dir="$postprocess_stdout_dir" ;;
+      *) postprocess_sbatch_log_dir="$(pwd)/$postprocess_stdout_dir" ;;
+    esac
+  fi
+
+  if [ -z "${POSTPROCESS_ROOT:-}" ]; then
+    POSTPROCESS_ROOT="$POSTPROCESS_DIR/processed_${DOMAIN_NAME}_${YEAR_START}_${YEAR_STOP}_${postprocess_run_tag}"
+    export POSTPROCESS_ROOT
+    echo "WARNING: POSTPROCESS_ROOT was unset; using $POSTPROCESS_ROOT"
+  elif [ -d "$POSTPROCESS_ROOT" ]; then
+    existing_postprocess_nc=$(find "$POSTPROCESS_ROOT" -maxdepth 4 -type f -name '*.nc' -print -quit)
+    if [ -n "$existing_postprocess_nc" ]; then
+      requested_postprocess_root="$POSTPROCESS_ROOT"
+      postprocess_root_base=${requested_postprocess_root%/}
+      [ -n "$postprocess_root_base" ] || postprocess_root_base="$requested_postprocess_root"
+      POSTPROCESS_ROOT="${postprocess_root_base}_run_${postprocess_run_tag}"
+      export POSTPROCESS_ROOT
+      echo "WARNING: requested POSTPROCESS_ROOT already contains NetCDF output"
+      echo "  requested: $requested_postprocess_root"
+      echo "  existing file: $existing_postprocess_nc"
+      echo "  using fresh POSTPROCESS_ROOT=$POSTPROCESS_ROOT"
+    fi
+  fi
+
+  if ! mkdir -p "$POSTPROCESS_ROOT" "$POSTPROCESS_SCRATCH" "$POSTPROCESS_LOG_DIR" "$postprocess_sbatch_log_dir"; then
+    echo "ERROR: failed to create postprocess directories"
+    echo "  POSTPROCESS_ROOT=$POSTPROCESS_ROOT"
+    echo "  POSTPROCESS_SCRATCH=$POSTPROCESS_SCRATCH"
+    echo "  POSTPROCESS_LOG_DIR=$POSTPROCESS_LOG_DIR"
+    echo "  SBATCH_OUTPUT_DIR=$postprocess_sbatch_log_dir"
+    exit 1
+  fi
+
+  for postprocess_check_dir in "$POSTPROCESS_ROOT" "$POSTPROCESS_SCRATCH" "$POSTPROCESS_LOG_DIR" "$postprocess_sbatch_log_dir"; do
+    if [ ! -d "$postprocess_check_dir" ]; then
+      echo "ERROR: postprocess directory is missing: $postprocess_check_dir"
+      exit 1
+    fi
+    if [ ! -w "$postprocess_check_dir" ]; then
+      echo "ERROR: postprocess directory is not writable: $postprocess_check_dir"
+      exit 1
+    fi
+  done
+
+  echo "Postprocess startup check passed"
+  echo "  POSTPROCESS_SCRIPT=$POSTPROCESS_SCRIPT"
+  echo "  POSTPROCESS_ROOT=$POSTPROCESS_ROOT"
+  echo "  POSTPROCESS_SCRATCH=$POSTPROCESS_SCRATCH"
+  echo "  POSTPROCESS_LOG_DIR=$POSTPROCESS_LOG_DIR"
+  echo "  SBATCH_OUTPUT_DIR=$postprocess_sbatch_log_dir"
+}
+
+module load clustershell/1.8
+
+echo "run_all"
+hostname
+
+cd ${SLURM_SUBMIT_DIR}
+echo "  SLURM_SUBMIT_DIR" $SLURM_SUBMIT_DIR
+echo "  SLURM_JOB_NODELIST" $SLURM_JOB_NODELIST
+
+rm new_hosts
+export NODELIST=nodelist.txt
+srun -l bash -c 'hostname' | sort | awk '{print $2}' > $NODELIST
+cat $NODELIST | tr ' ' '\n' | sort | uniq > new_hosts
+
+echo `pwd`
+rm machinefile
+MACHINEFILE=$HOME/bin/make_machinefile_qsub
+$MACHINEFILE -i link_machinefile -o machinefile -n new_hosts
+wait
+echo "after construction machinefile"
+cp machinefile machinefile_keep
+
+export GETMDIR="$GETMDIR_WRAPPER"
+export runid="$RUNID"
+
+cd "$DOMAIN_DIR"
+
+if [ "${POSTPROCESS:-0}" = "1" ]; then
+  prepare_postprocess_startup
+  rm -f "$POSTPROCESS_LAST_JOB_FILE"
+fi
+
+export conf="$CONF"
+export nprocesses="$NPROCESSES"
+
+run_type="$RUN_TYPE"
+
+particle_tracking=0
+export particle_tracking=$particle_tracking
+
+make_boundary_conditions=0
+
+merge_files=1
+if [ $make_boundary_conditions == 1 ] ; then
+  merge_files=0
+fi
+export merge_files=$merge_files
+
+if [ "$conf" = "1p" ] ; then
+  export PDSH=
+else
+  machines=`cat machinefile | sort | uniq | tr [:space:] , | sed -e "s/,$//"`
+  export nodes=`cat machinefile | sort | uniq | tr [:space:] , | sed -e "s/,$//" | sed -e "y/n/ /" | sed -e "y/,/ /"`
+  export DSH="clush -w $machines"
+  export PDSH="clush -R ssh -w $machines"
+fi
+
+dir_bdy2d="$DIR_BDY2D"
+
+mkdir -p log/$conf
+
+EPOCH_START="1995-01-01 00:00:00"
+YEAR_BASE=1994
+
+YEAR_START="$YEAR_START"
+YEAR_STOP="$YEAR_STOP"
+
+months="$MONTHS"
+days="$DAYS"
+
+timestep=10
+
+OUTDIR=`pwd`/out/$conf
+
+export save_2d=True
+export save_3d=True
+
+###############################################################################
+# 2. BASE 1
+###############################################################################
+
+if [ $BASE_1 == "1" ]; then
+   echo "Base 1"
+   export runtype=$run_type
+   export hotstart=False
+   export use_epoch=False 
+   export metforcing=False
+#   export metforcing=True
+   export river_method=0
+#   export An=50.
+   export An=-1.
+#   export bdy2d=False
+#   export bdyramp_2d=-1
+   export bdy2d=True
+   export bdyramp_2d=40320 #181440 #60480 #8640 #28800 #8640 #4320
+   export bdy3d=True       # should be true
+   export temp_method=1 #3
+   export salt_method=1 #3
+   export calc_temp=True   # should be true
+   export calc_salt=True   # should be true
+
+   export save_initial=True
+#   export An_method=2
+#   export An_file=field_AN.nc
+   export An_method=1
+   export An=50.
+   export crit_depth=3.0
+   export min_depth=1.0
+   export clip_depth=0.1
+
+   export out_dir=${OUTDIR-"./out"}/base_1
+   export hot_dir=${OUTDIR-"./out"}/base_2
+#   export out_dir2=${OUTDIR2-"./out"}/base_1
+#   export col_dir=${COLDIR-"./out"}/base_1
+   rm flex_out
+   ln -s $out_dir flex_out
+
+   export step_2d=2160 #8640 #8640 #28800 #28800 #240 is hourly for 15 sec time step
+   export step_3d=17280 #8640 #43200
+
+#   $PDSH "mkdir -p $out_dir $hot_dir"
+   mkdir -p $out_dir $hot_dir
+#   mkdir -p $col_dir
+
+   ln -sf no_bio.inp bio.inp
+
+   export logdir=log/$conf/base_1
+   echo $logdir
+   mkdir -p $logdir
+
+   export start="$YEAR_BASE-10-01 00:00:00"
+#   export stop="$YEAR_BASE-10-01 01:00:00"
+   export stop="$YEAR_BASE-11-01 00:00:00"
+   export ref_start_time="$YEAR_BASE-10-01 00:00:00"
+   echo  "run.getm_qsub  $start   $stop  >& $logdir/log.base1"
+ 
+   # modify output.yaml
+#   sed -i '/time_start/c\  time_start: '$YEAR_BASE'-10-01 00:00:00' ./output.yaml
+   basemonth='10'
+   sed --follow-symlinks -i -e 's/\(time_start: \).\{10\}/\1'$YEAR_BASE'-'$basemonth'-01/' ./output.yaml
+   wait
+   sed --follow-symlinks -i -e 's/\(time_reference: \).\{10\}/\1'$YEAR_BASE'-'$basemonth'-01/' ./output.yaml
+   wait
+
+   echo "calling run.getm"
+   pwd
+   ls $logdir
+   ./run.getm "$start" "$stop" > $logdir/log.base_1
+   echo "after run.getm"
+
+#   ./run.getm "2000-10-01 00:00:00" "2000-11-01 00:00:00" >& log/$conf/log.base_1
+#   ./run.getm "2000-10-01 00:00:00" "2000-10-03 00:00:00" >& log/$conf/log.base_1
+fi
+
+###############################################################################
+# 3. BASE 2
+###############################################################################
+
+if [ $BASE_2 == "1" ]; then
+
+   export runtype=$run_type
+   export hotstart=True
+   export use_epoch=False 
+#   export metforcing=True
+   export metforcing=False  # best not to start yet: causes instabilities in deep corners
+   export river_method=0
+#   export An=50.
+   export An=-1.
+   export bdy2d=True
+   export bdyramp_2d=-1 #864000 #4320
+#   export bdy2d=False
+#   export bdy3d=False
+   export bdy3d=True
+   export temp_method=0
+   export salt_method=0
+   export calc_temp=True
+   export calc_salt=True
+
+#   export An_method=2
+#   export An_file=field_AN.nc
+   export crit_depth=3.0 #2.25
+   export min_depth=1.0 #0.75
+   export clip_depth=0.1
+   export save_initial=False
+
+   export out_dir=${OUTDIR-"./out"}/base_2
+   export hot_dir=${OUTDIR-"./out"}/base_3
+#   export out_dir2=${OUTDIR2-"./out"}/base_2
+#   export col_dir=${COLDIR-"./out"}/base_2
+   rm flex_out
+   ln -s $out_dir flex_out
+
+   export step_2d=8640 #5760 #2880 #240 is hourly for 15 sec time step
+   export step_3d=43200 #5760 #2880
+
+#   $PDSH "mkdir -p $out_dir $hot_dir"
+   mkdir -p $out_dir $hot_dir
+#   mkdir -p $col_dir
+
+   ln -sf no_bio.inp bio.inp
+
+   export logdir=log/$conf/base_2
+   mkdir -p $logdir
+
+   export start="$YEAR_BASE-11-01 00:00:00"
+   export stop="$YEAR_BASE-12-01 00:00:00"
+#   export stop="$YEAR_BASE-11-01 00:05:10"
+   export ref_start_time="$YEAR_BASE-11-01 00:00:00"
+   echo  "run.getm_qsub  $start   $stop  >& $logdir/log.base_2"
+
+   # modify output.yaml
+#   sed -i '/time_start/c\  time_start: '$YEAR_BASE'-11-01 00:00:00' ./output.yaml
+   basemonth='11'
+   sed --follow-symlinks -i -e 's/\(time_start: \).\{7\}/\1'$YEAR_BASE'-'$basemonth'/' ./output.yaml
+   wait
+ 
+   ./run.getm "$start" "$stop" >& $logdir/log.base_2
+
+ #  ./run.getm "2000-11-01 00:00:00" "2000-12-01 00:00:00" >& log/$conf/log.base_2
+fi
+
+export runtype=$run_type
+export hotstart=True
+#export metforcing=False
+export river_method=2
+#export river_method=0
+#export An=20.
+export An=-1.
+export bdy2d=True
+export bdyramp_2d=-1
+export bdyramp_3d=8640 #28800 #8640 #4320
+#export bdy3d=False
+export bdy3d=True
+export temp_method=0
+export salt_method=0
+
+#export avhback=0.0 #1e-07 #1e-07
+
+#export An_method=2
+#export An_file=field_AN.nc
+
+###############################################################################
+# 4. BASE 3
+###############################################################################
+
+if [ $BASE_3 == "1" ]; then
+
+   export meteo_ramp=181440   #introduce here but slowly
+   export metforcing=True
+
+   export use_epoch=False 
+#export metforcing=False
+#   export bdyramp_2d=4320
+   export bdyramp_2d=-1
+#   export An=50.
+   export out_dir=${OUTDIR-"./out"}/base_3
+   export hot_dir=${OUTDIR-"./out"}/$YEAR_START/01
+#   export out_dir2=${OUTDIR2-"./out"}/base_3
+#   export col_dir=${COLDIR-"./out"}/base_3
+   rm flex_out
+   ln -s $out_dir flex_out
+
+   export step_2d=720 #240 is hourly for 15 sec time step (360 for 10 s)
+   export step_3d=2880
+
+   export crit_depth=1.5
+   export min_depth=0.5
+   export clip_depth=0.1
+
+   export save_initial=False
+
+#   $PDSH "mkdir -p $out_dir $hot_dir"
+   mkdir -p $out_dir $hot_dir
+#   mkdir -p $col_dir
+
+   ln -sf no_bio.inp bio.inp
+
+   export logdir=log/$conf/base_3
+   mkdir -p $logdir
+
+   export start="$YEAR_BASE-12-01 00:00:00"
+   export stop="$YEAR_START-01-01 00:00:00"
+   export ref_start_time="$YEAR_BASE-12-01 00:00:00"
+   echo  "run.getm_qsub  $start   $stop  >& $logdir/log.base_3"
+
+   # modify output.yaml
+#   sed -i '/time_start/c\  time_start: '$YEAR_BASE'-12-01 00:00:00' ./output.yaml
+   basemonth='12'
+   sed --follow-symlinks -i -e 's/\(time_start: \).\{7\}/\1'$YEAR_BASE'-'$basemonth'/' ./output.yaml
+   wait
+ 
+   ./run.getm "$start" "$stop" >& $logdir/log.base_3
+
+#   ./run.getm "2000-12-01 00:00:00" "2000-12-02 00:00:00" >& log/$conf/log.base_3
+#   ./run.getm "2000-12-01 00:00:00" "2001-01-01 00:00:00" >& log/$conf/log.base_3
+fi
+
+###############################################################################
+# 5. BASE 4 (HOTSTART / PRODUCTION RUN)
+###############################################################################
+
+export runtype=$run_type
+export hotstart=True
+export river_method=2
+export An=-1.
+export bdy2d=True
+export bdyramp_2d=-1
+export bdyramp_3d=-1
+export bdy3d=True
+export temp_method=0
+export salt_method=0
+
+export step_2d="$STEP_2D"
+export step_3d="$STEP_3D"
+export save_initial=False
+
+if [ $make_boundary_conditions == 1 ] ; then
+  export step_2d=360
+  export step_3d=360
+  export save_initial=True
+fi
+
+export metforcing=True
+export use_epoch=True
+
+export crit_depth=0.9
+export min_depth=0.3
+export clip_depth=0.1
+
+export save_fluxes=True
+export bdy3d_sponge_size=0
+
+yy=$YEAR_START
+while [ $yy -le $YEAR_STOP ] ; do
+   echo "$yy"
+
+   for mm in $months ; do
+      if [ "$yy" -eq "$YEAR_START" ] && [ "$mm" -lt "$BEGIN_MONTH" ]; then
+         continue
+      fi
+
+      echo "$mm"
+
+      for dd in $days ; do
+
+         ln -sf do_bio.inp bio.inp
+
+         hot_mm=`expr $mm + 1`
+
+         if [ "$hot_mm " -lt "10" ] ; then
+            hot_mm=0$hot_mm
+         fi
+
+         if [ "$mm " -eq "12" ] ; then
+            hot_mm=01
+            hot_yy=`expr $yy + 1`
+         else
+            hot_yy=$yy
+         fi
+
+         export out_dir=${OUTDIR-"./out"}/$yy/$mm/
+         export hot_dir=${OUTDIR-"./out"}/$hot_yy/$hot_mm/
+
+         mkdir -p $out_dir $hot_dir
+         rm flex_out
+         ln -s $out_dir flex_out
+
+         export start="$yy-$mm-$dd 00:00:00"
+         export stop="$hot_yy-$hot_mm-$dd 00:00:00"
+
+         export logdir=log/$conf/$yy$mm$dd
+         export year=$yy
+         export month=$mm
+
+         mm_ref=01
+         YBASE=`expr $YEAR_BASE + 1`
+         export ref_start_time="$YBASE-$mm_ref-$days 00:00:00"
+
+         cp output.yaml output_yaml.tmp
+         sed --follow-symlinks -e 's/\(time_start: \).\{7\}/\1'$yy'-'$mm'/' output_yaml.tmp > output.yaml
+         wait
+         rm output_yaml.tmp
+
+         rm ./bdy_2d.nc
+         if [ $yy -ge 1965 -a $yy -lt 1973 ]; then
+           ln -s $dir_bdy2d/boundary/tides.1965-01-01_1973-01-010.4.nc bdy_2d.nc
+         fi
+         if [ $yy -ge 1973 -a $yy -lt 1981 ]; then
+           ln -s $dir_bdy2d/boundary/tides.1973-01-01_1981-01-010.4.nc bdy_2d.nc
+         fi
+         if [ $yy -ge 1981 -a $yy -lt 1987 ]; then
+           ln -s $dir_bdy2d/boundary/tides.1981-01-01_1987-01-010.4.nc bdy_2d.nc
+         fi
+         if [ $yy -ge 1987 -a $yy -lt 1994 ]; then
+           ln -s $dir_bdy2d/boundary/tides.1986-09-31_1994-01-010.4.nc bdy_2d.nc
+         fi
+         if [ $yy -ge 1994 -a $yy -lt 2000 ]; then
+           ln -s $dir_bdy2d/boundary/tides.1992-09-31_2000-01-010.4.nc bdy_2d.nc
+         fi
+         if [ $yy -ge 2000 -a $yy -lt 2008 ]; then
+           ln -s $dir_bdy2d/boundary/tides.2000-01-01_2008-01-010.4.nc bdy_2d.nc
+         fi
+         if [ $yy -ge 2008 -a $yy -lt 2014 ]; then
+           ln -s $dir_bdy2d/boundary/tides.2008-01-01_2014-01-010.4.nc bdy_2d.nc
+         fi
+         if [ $yy -ge 2014 -a $yy -lt 2022 ]; then
+           ln -s $dir_bdy2d/boundary/tides.2014-01-01_2022-01-010.4.nc bdy_2d.nc
+         fi
+         if [ $yy -ge 2022 -a $yy -lt 2030 ]; then
+           ln -s $dir_bdy2d/boundary/tides.2022-01-01_2030-01-010.4.nc bdy_2d.nc
+         fi
+
+         mkdir -p $logdir
+
+         ######################################################################
+         # CO2 UPDATE FOR CURRENT HOTSTART MONTH
+         ######################################################################
+         export YEAR_START="$yy"
+         export MONTHS="$mm"
+
+         echo "Updating CO2 forcing for YEAR_START=$YEAR_START MONTHS=$MONTHS"
+         ./co2_data_find.sh || exit 1
+         grep pCO2_air CO2.nml
+	 
+	 echo "===== $yy-$mm =====" | tee -a co2_update_test.log
+	 grep pCO2_air CO2.nml | tee -a co2_update_test.log
+
+         ######################################################################
+         # RUN MODEL FOR CURRENT MONTH
+         ######################################################################
+         ./run.getm "$start" "$stop" >& log/$conf/log.$yy.$mm.$dd
+         wait
+         sleep 1
+
+      done
+
+      # boundary conditions
+      if [ $make_boundary_conditions == 1 ] ; then
+        echo "Processing boundary conditions: merging subdomains..."
+        $HOME/bin/merge_selected_files $yy $mm >& ./err_merge_selected_files.log
+        wait
+        ls $out_dir
+        rm -f $out_dir/north_west_european_shelf_bfm_jan2015.3d.0???.nc
+        wait
+        rm -f $out_dir/north_west_european_shelf_bfm_jan2015.2d.0???.nc
+        wait
+        rm -f $out_dir/north_west_european_shelf_bfm_jan2015.mean.0???.nc
+        wait
+        # remove log files, essential: the waiting script will check these
+        echo "Removing nesting log files..."
+        rm $HOME/nest_bdy_dws200m.log
+        rm $HOME/nest_bdy_solar_5km.log
+        rm $HOME/nest_bdy_solar_100m.log
+        rm $HOME/nest_bdy_solar_500m.log
+        wait
+        echo "Launching nesting scripts..."
+        sbatch --export=bc_yy=$yy,bc_mm=$mm ./nest_bdy_dws200m
+        sbatch --export=bc_yy=$yy,bc_mm=$mm ./nest_bdy_solar_5km
+        sbatch --export=bc_yy=$yy,bc_mm=$mm ./nest_bdy_solar_500m
+        sbatch --export=bc_yy=$yy,bc_mm=$mm ./nest_bdy_solar_100m
+        # wait until these are all done, and then delete the merged file. This script continues with next month!
+#        sbatch --export=merged_file=$out_dir/north_west_european_shelf_bfm_jan2015.3d.subset.nc ./wait_for_nested_bdys.sh
+        echo "Continuing with next month..."
+      fi
+      
+        # particle tracking
+         if [ $particle_tracking == 1 ] ; then
+           export ptcol_dir=/fhgfs/client/jvandermolen/active_runs/out_nwes_getm/north_west_european_shelf/20x20/$yy
+           outdirparticle=/fhgfs/client/jvandermolen/active_runs/out_nwes_getm/north_west_european_shelf/20x20/particletracking
+           mkdir $outdirparticle
+           echo $outdirparticle
+           export ptyear=$yy
+           if [ $mm == "01" ] ; then
+             export ptmm1=1
+           fi
+           if [ $mm == "02" ] ; then
+             export ptmm1=2
+           fi
+           if [ $mm == "03" ] ; then
+             export ptmm1=3
+           fi
+           if [ $mm == "04" ] ; then
+             export ptmm1=4
+           fi
+           if [ $mm == "05" ] ; then
+             export ptmm1=5
+           fi
+           if [ $mm == "06" ] ; then
+             export ptmm1=6
+           fi
+           if [ $mm == "07" ] ; then
+             export ptmm1=7
+           fi
+           if [ $mm == "08" ] ; then
+             export ptmm1=8
+           fi
+           if [ $mm == "09" ] ; then
+             export ptmm1=9
+           fi
+           if [ $mm == "10" ] ; then
+             export ptmm1=10
+           fi
+           if [ $mm == "11" ] ; then
+             export ptmm1=11
+           fi
+           if [ $mm == "12" ] ; then
+             export ptmm1=12
+           fi
+           export ptdaily_dir=$outdirparticle
+           export ptfstem=$runid
+           nsubs=`sed -n '1p' par_setup.dat`
+           let nsubs=$nsubs-1
+           export ptnsubs=$nsubs
+           # merge subdomains into daily files
+           ~/bin/particle_extract_perday_automatic_permonth >& $outdirparticle/err_particleextract_$yy$mm.txt
+           # remove model output to make space for next year's run
+           rm -f $ptcol_dir/$mm/*.nc
+         fi
+
+      
+   done
+   yy=`expr $yy + 1`
+done
+
+#mpdallexit

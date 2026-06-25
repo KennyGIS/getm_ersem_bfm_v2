@@ -1,0 +1,21 @@
+!-------------------------------------------------------------------------------
+!  Specification for 3D part of biological modelling
+! 
+!  hotstart_bio=	reading initial fields from hot-start file
+!  see getm.inp for descriptiona and valid values of the following variables
+!  bio_hor_adv=		horizontal advection method
+!  bio_ver_adv=		vertical advection method
+!  bio_adv_split=	spitting scheme for advection
+!  bio_AH=  horizontal diffusivity for biological variables
+!-------------------------------------------------------------------------------
+&getm_bio_nml
+  hotstart_bio=       .false.,
+  bio_hor_adv=         4,
+  bio_ver_adv=         4,
+  bio_adv_split=       1,
+  bio_AH=              -1.0,
+/
+&getm_bfm_nml
+ben_param_file='/data/jv02/model_input_files/nwes/Ben_Sedprop.nc',
+calc_init_bennut_states=0,
+/

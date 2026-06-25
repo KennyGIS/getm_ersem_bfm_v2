@@ -1,0 +1,241 @@
+#!/bin/sh
+
+# time format: "yyyy-mm-dd hh:mi:ss"
+# ex. "2001-12-02 00:00:00"
+
+###############################################################################
+# USER INPUT (EDIT THIS ONLY)
+###############################################################################
+
+VERSION_ROOT="${VERSION_ROOT:-$HOME/version_2}"
+DOMAIN_NAME="nwes"
+DOMAIN_DIR="$VERSION_ROOT/home/GETM_ERSEM_SETUPS/$DOMAIN_NAME"
+
+GETM_SCHEMADIR="$VERSION_ROOT/home/getm-git/schemas"
+GOTMGUIDIR_WRAPPER="$VERSION_ROOT/home/GOTM_SOURCES/gotm-git/gui.py"
+
+GETM_EXE="$DOMAIN_DIR/bin/getm_prod_${FORTRAN_COMPILER}.${conf}"
+SCENARIO_XML="north_west_european_shelf.xml"
+
+###############################################################################
+
+echo "run.getm"
+hostname
+
+echo "modelname=$modelname"
+/bin/rm -f .getm.run.exit
+
+start_time=$1
+stop_time=$2
+
+if [ "${POSTPROCESS_ONLY:-0}" = "1" ]; then
+  echo "POSTPROCESS_ONLY=1: skipping GETM and move_files"
+
+  if [ -z "${out_dir:-}" ]; then
+    echo "ERROR: out_dir must point to an existing merged monthly output folder"
+    exit 1
+  fi
+
+  if [ -z "${POSTPROCESS_SCRIPT:-}" ] || [ -z "${POSTPROCESS_ROOT:-}" ] || [ -z "${POSTPROCESS_SCRATCH:-}" ]; then
+    echo "ERROR: POSTPROCESS_SCRIPT, POSTPROCESS_ROOT, and POSTPROCESS_SCRATCH must be set"
+    exit 1
+  fi
+
+  if [ ! -d "$out_dir" ]; then
+    echo "ERROR: out_dir does not exist: $out_dir"
+    exit 1
+  fi
+
+  if ! ls "$out_dir"/*.3d.nc >/dev/null 2>&1; then
+    echo "ERROR: no merged *.3d.nc files found in out_dir: $out_dir"
+    exit 1
+  fi
+
+  postprocess_jobid=$(sbatch --parsable \
+    "$POSTPROCESS_SCRIPT" \
+    "$out_dir" \
+    "$POSTPROCESS_ROOT" \
+    "$POSTPROCESS_SCRATCH")
+  postprocess_submit_rc=$?
+
+  if [ $postprocess_submit_rc -ne 0 ] || [ -z "$postprocess_jobid" ]; then
+    echo "post-processing submission failed with exit code $postprocess_submit_rc"
+    exit 1
+  fi
+
+  echo "Submitted post-processing test job $postprocess_jobid"
+  exit 0
+fi
+
+echo "ref_start: $ref_start_time"
+echo "start: $1"
+echo "stop:  $2"
+
+echo "configuration: $_CONFIGURATION_"
+
+# mpi on deepgreen
+if [ $MPI == MPICH ]; then
+   module unload py2-scipy/1.1.0
+   module swap openmpi3 mpich/3.2.1
+   mpi_args="-envlist _CONFIGURATION_ -f machinefile -l"
+elif [ $MPI == MVAPICH2 ]; then
+   module unload py2-scipy/1.1.0
+   module swap openmpi3 mvapich2/2.2
+   mpi_args="-hostfile machinefile"
+elif [ $MPI == OPENMPI ]; then
+   export GFORTRAN_UNBUFFERED_ALL=y
+   export GFORTRAN_UNBUFFERED_PRECONNECTED=y
+   wait
+   mpi_args="-x LD_LIBRARY_PATH -x GFORTRAN_UNBUFFERED_PRECONNECTED -x GFORTRAN_UNBUFFERED_ALL --bind-to core --hostfile machinefile -mca rmaps seq"
+fi
+
+echo "after setting mpi_args"
+ls -la machinefile
+
+np=`head -1 par_setup.dat`
+
+echo "removing old output and old output hot start files"
+rm -f $out_dir/restart.????.out
+wait
+rm -f $out_dir/*.nc
+wait
+rm -f $logdir/*.stderr
+wait
+echo "done"
+
+echo "removing old input hot start files"
+echo "Never mind messages that file is not found: it does get done"
+ip=0
+while [ $ip -le $nprocesses ]; do
+  if [ $ip -lt 10 ]; then
+    ipn="000"$ip
+  elif [ $ip -lt 100 ]; then
+    ipn="00"$ip
+  elif [ $ip -lt 1000 ]; then
+    ipn="0"$ip
+  else
+    ipn=$ip
+  fi
+  echo $ipn
+  echo $hot_dir
+  rm -f $hot_dir/restart.$ipn.in
+  wait
+  let ip=ip+1
+done
+wait
+echo "done"
+
+echo "making getm.inp"
+echo "metforcing" $metforcing
+
+export start=$start_time
+export stop=$stop_time
+export GOTMGUIDIR="$GOTMGUIDIR_WRAPPER"
+
+$HOME/tools/bbpy/editscenario/editscenario/editscenario.py -q -e nml . --schemadir="$GETM_SCHEMADIR" --targetversion=getm-2.5 "$SCENARIO_XML"
+
+echo "done"
+
+date
+echo "start running the model...."
+t1=`date +%s`
+
+echo "Executable: $GETM_EXE"
+
+if [ $MPI == MPICH ]; then
+  echo "running with MPICH"
+  mpiexec $mpi_args -np $np "$GETM_EXE" &> $logdir/log.run
+elif [ $MPI == MVAPICH2 ]; then
+  echo "running with MVAMPICH2"
+  mpirun_rsh $mpi_args -np $np "$GETM_EXE" &> $logdir/log.run
+elif [ $MPI == OPENMPI ]; then
+  echo "running with OPENMPI"
+  mpirun $mpi_args -np $np "$GETM_EXE" &> $logdir/log.run
+fi
+
+rc=$?
+echo "GETM exit code: $rc"
+
+if [ $rc -ne 0 ]; then
+  echo "GETM failed with exit code $rc"
+  exit $rc
+fi
+
+t2=`date +%s`
+echo "... we made it"
+
+echo $t2-$t1 > $$.tmp
+wall=`bc < $$.tmp`
+rm -f $$.tmp
+echo "wall clock time: $wall secs"
+echo "wall clock time: $wall secs" >> $logdir/log.run 2>&1
+
+echo "starting move_files"
+move_jobid=$(sbatch --parsable ./move_files "$out_dir" "$runid" "$merge_files")
+move_submit_rc=$?
+
+if [ $move_submit_rc -ne 0 ] || [ -z "$move_jobid" ]; then
+  echo "move_files submission failed with exit code $move_submit_rc"
+  exit 1
+fi
+
+echo "Submitted move_files as job $move_jobid"
+
+if [ "${POSTPROCESS:-0}" = "1" ]; then
+  if [ -z "${POSTPROCESS_SCRIPT:-}" ] || [ -z "${POSTPROCESS_ROOT:-}" ] || [ -z "${POSTPROCESS_SCRATCH:-}" ]; then
+    echo "POSTPROCESS is enabled but POSTPROCESS_SCRIPT, POSTPROCESS_ROOT, or POSTPROCESS_SCRATCH is unset"
+    exit 1
+  fi
+
+  previous_postprocess_jobid=""
+  postprocess_last_job_file="${POSTPROCESS_LAST_JOB_FILE:-$DOMAIN_DIR/.last_postprocess_jobid}"
+  if [ -s "$postprocess_last_job_file" ]; then
+    previous_postprocess_jobid=$(cat "$postprocess_last_job_file")
+  fi
+
+  postprocess_dependency="afterok:$move_jobid"
+  if [ -n "$previous_postprocess_jobid" ]; then
+    postprocess_dependency="${postprocess_dependency}:$previous_postprocess_jobid"
+  fi
+
+  postprocess_jobid=$(sbatch --parsable \
+    --dependency="$postprocess_dependency" \
+    "$POSTPROCESS_SCRIPT" \
+    "$out_dir" \
+    "$POSTPROCESS_ROOT" \
+    "$POSTPROCESS_SCRATCH")
+  postprocess_submit_rc=$?
+
+  if [ $postprocess_submit_rc -ne 0 ] || [ -z "$postprocess_jobid" ]; then
+    echo "post-processing submission failed with exit code $postprocess_submit_rc"
+    exit 1
+  fi
+
+  echo "$postprocess_jobid" > "$postprocess_last_job_file"
+  echo "Submitted post-processing as job $postprocess_jobid with dependency $postprocess_dependency"
+fi
+
+echo "moving restart files"
+echo "moving restart files, hot_dir:",$hot_dir
+sleep 10
+mv -f $out_dir/*.out $hot_dir/.
+wait
+rename .out .in $hot_dir/*.out
+wait
+sleep 10
+echo "done"
+
+wait
+
+echo "done"
+
+echo "moving log files"
+rsync -a *.stderr $logdir/.
+cp getm.inp $logdir/.
+rm getm.inp
+wait
+echo "done"
+
+rm .info.pid
+pid=$!
+echo "$out_dir $coldir $pid" >> .info.pid

@@ -1,0 +1,55 @@
+# Recommended daily-mean-only flexible output design for GETM hydrodynamic fields.
+#
+# This file is intended as a template, not a direct drop-in replacement without
+# checking the exact GETM output variable names available in your build.
+#
+# Design principles:
+# - official exported outputs are daily means only
+# - no online vertical averaging, integration, seasonal, or annual aggregation
+# - enough vertical geometry is exported to support conservative offline remapping
+# - time_start and time_reference are still expected to be rewritten by run_all
+
+allow_missing_fields: true
+
+flex_out_tmp/nwes.physics_2d_daymean:
+  use: true
+  format: netcdf
+  time_step: 1
+  time_unit: day
+  time_method: 2
+  time_reference: 2015-04-01 00:00:00
+  time_start: 2015-04-01 00:00:00
+  sync_interval: 1
+  variables:
+    - source: lonc
+    - source: latc
+    - source: bathymetry
+    - source: z
+      name: elev
+
+flex_out_tmp/nwes.physics_3d_daymean:
+  use: true
+  format: netcdf
+  time_step: 1
+  time_unit: day
+  time_method: 2
+  time_reference: 2015-04-01 00:00:00
+  time_start: 2015-04-01 00:00:00
+  sync_interval: 1
+  variables:
+    # Vertical geometry support for offline 1 m remapping.
+    - source: level
+    - source: bathymetry
+    - source: z
+      name: elev
+    - source: hn
+      name: layer_thickness
+    # Optional if available; keep if your build exposes it cleanly.
+    - source: num
+    - source: nuh
+    # Physics needed for offline MLD and PEA from daily means.
+    - source: temp
+      name: ETW
+    - source: salt
+      name: ESW
+
