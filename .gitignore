@@ -31,3 +31,16 @@
   *~
   *.swp
   *.swo
+
+  # Model runtime outputs
+  model_out/*
+  !model_out/README.md
+  !model_out/.gitkeep
+  GETM_ERSEM_SETUPS/nwes/out/*
+  !GETM_ERSEM_SETUPS/nwes/out/README.md
+  !GETM_ERSEM_SETUPS/nwes/out/.gitkeep
+  *.nc
+  *.nc4
+  restart*.in
+  restart*.out
+  *.log
