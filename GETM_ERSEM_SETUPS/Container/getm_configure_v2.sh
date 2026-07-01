@@ -23,7 +23,7 @@
 #   GOTM_BASE=$VERSION_ROOT/home/GOTM_SOURCES/gotm_coupled_bfm_2016
 #   BFM_BASE=$VERSION_ROOT/home/BFM_SOURCES/bfm_2016
 #   FABM_BASE=$VERSION_ROOT/home/fabm-git/fabm
-#   GOTM_BUILD_DIR=$VERSION_ROOT/tools/getm/build/gfortran/gotm
+#   GOTM_BUILD_DIR=$VERSION_ROOT/home/build/gotm 
 #   install_prefix=$VERSION_ROOT/local/getm
 #   CMAKE_BIN=cmake
 #   COMPILATION_MODE=production
@@ -94,7 +94,7 @@ if [ "${VERSION_ROOT:-}" ]; then
     # Force the staged GOTM build path when VERSION_ROOT is set. Older shell
     # sessions may export GOTM_BUILD_DIR from version_2 or version_stable, and
     # allowing that through breaks the isolated build.
-    GOTM_BUILD_DIR=$VERSION_ROOT/tools/getm/build/gfortran/gotm
+    GOTM_BUILD_DIR=${GOTM_BUILD_DIR:=$VERSION_ROOT/home/build/gotm}
     install_prefix=${install_prefix:=$VERSION_ROOT/local/getm}
 else
     GETM_BASE=${GETM_BASE:=$HOME/home/GETM_SOURCES/getm_coupled_bfm_2016/}
